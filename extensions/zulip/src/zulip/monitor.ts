@@ -820,6 +820,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           });
           queueId = newQueue.queueId;
           lastEventId = newQueue.lastEventId;
+          runtime.log?.(`zulip event queue re-registered: ${queueId}`);
           resetPollBackoff();
           continue;
         }
@@ -865,6 +866,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         });
         queueId = newQueue.queueId;
         lastEventId = newQueue.lastEventId;
+        runtime.log?.(`zulip event queue re-registered: ${queueId}`);
         resetPollBackoff();
         continue;
       }
