@@ -306,6 +306,18 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
 
     const rawText = stripHtmlToText(message.content ?? "");
+
+    // Temporary: log inbound messages for debugging (helps confirm whether /events polling is receiving anything).
+    try {
+      if (kind === "dm") {
+        runtime.log?.(`zulip inbound dm id=${messageId} from=${senderName} <${senderId}>`);
+      } else {
+        const roomLabel = streamName ? `#${streamName}` : `stream:${streamId}`;
+        runtime.log?.(
+          `zulip inbound stream id=${messageId} room=${roomLabel} topic=${topic} from=${senderName} <${senderId}>`,
+        );
+      }
+    } catch {}
     const oncharResult = stripOncharPrefix(rawText, oncharPrefixes);
 
     const uploadUrls = extractZulipUploadUrls(message.content ?? "", baseUrl);
@@ -638,11 +650,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       accountId: account.accountId,
     });
 
-    const typingParams = isDM
-      ? { op: "start" as const, type: "direct" as const, to: [Number(message.sender_id)] }
-      : streamId
-        ? { op: "start" as const, type: "stream" as const, streamId: Number(streamId), topic }
-        : null;
+    // Typing indicators have proven unreliable in this deployment ("Marvin is typing..." can get stuck
+    // if the process crashes mid-reply or a stop call fails). Disable typing until the monitor is stable.
+    const typingParams = null as
+      | { op: "start" | "stop"; type: "direct"; to: number[] }
+      | { op: "start" | "stop"; type: "stream"; streamId: number; topic: string }
+      | null;
 
     const typingCallbacks = createTypingCallbacks({
       start: async () => {
@@ -796,10 +809,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       });
 
       if (response.result === "error") {
-        if (
-          response.code === "BAD_EVENT_QUEUE_ID" ||
-          response.msg?.includes("Bad event queue id")
-        ) {
+        const msg = response.msg ?? "";
+        const isBadQueue =
+          response.code === "BAD_EVENT_QUEUE_ID" || msg.toLowerCase().includes("bad event queue");
+        if (isBadQueue) {
           runtime.log?.("zulip: queue expired, re-registering...");
           const newQueue = await registerZulipQueue(client, {
             eventTypes: ["message"],
@@ -840,12 +853,28 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       if (opts.abortSignal?.aborted) {
         break;
       }
+
+      const errStr = String(err);
+      // Zulip can invalidate event queues (server restart / retention / etc). When that happens,
+      // /events may return 400 "Bad event queue ID" and we must re-register.
+      if (errStr.toLowerCase().includes("bad event queue")) {
+        runtime.log?.("zulip: bad event queue error thrown; re-registering...");
+        const newQueue = await registerZulipQueue(client, {
+          eventTypes: ["message"],
+          streams,
+        });
+        queueId = newQueue.queueId;
+        lastEventId = newQueue.lastEventId;
+        resetPollBackoff();
+        continue;
+      }
+
       const status = (err as { status?: number })?.status;
       const retryAfterMs = (err as { retryAfterMs?: number })?.retryAfterMs;
-      runtime.error?.(`zulip polling error: ${String(err)}`);
+      runtime.error?.(`zulip polling error: ${errStr}`);
       opts.statusSink?.({
         connected: false,
-        lastError: String(err),
+        lastError: errStr,
       });
       const baseDelay = status === 429 ? 10000 : 1000;
       if (!pollBackoffMs) {
