@@ -15,6 +15,9 @@ const ZulipAccountSchemaBase = z
     enabled: z.boolean().optional(),
     configWrites: z.boolean().optional(),
     url: z.string().optional(),
+    // Backwards-compatible aliases for url.
+    site: z.string().optional(),
+    realm: z.string().optional(),
     email: z.string().optional(),
     apiKey: z.string().optional(),
     streams: z.array(z.string()).optional(),

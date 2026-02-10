@@ -104,17 +104,23 @@ export function resolveZulipAccount(params: {
   const envApiKey = allowEnv ? process.env.ZULIP_API_KEY?.trim() : undefined;
   const envEmail = allowEnv ? process.env.ZULIP_EMAIL?.trim() : undefined;
   const envUrl = allowEnv ? process.env.ZULIP_URL?.trim() : undefined;
+  const envSite = allowEnv ? process.env.ZULIP_SITE?.trim() : undefined;
+  const envRealm = allowEnv ? process.env.ZULIP_REALM?.trim() : undefined;
   const configApiKey = merged.apiKey?.trim();
   const configEmail = merged.email?.trim();
-  const configUrl = merged.url?.trim();
+  const configUrl = (merged.url ?? merged.site ?? merged.realm)?.trim();
   const apiKey = configApiKey || envApiKey;
   const email = configEmail || envEmail;
-  const baseUrl = normalizeZulipBaseUrl(configUrl || envUrl);
+  const baseUrl = normalizeZulipBaseUrl(configUrl || envUrl || envSite || envRealm);
   const requireMention = resolveZulipRequireMention(merged);
 
   const apiKeySource: ZulipTokenSource = configApiKey ? "config" : envApiKey ? "env" : "none";
   const emailSource: ZulipEmailSource = configEmail ? "config" : envEmail ? "env" : "none";
-  const baseUrlSource: ZulipBaseUrlSource = configUrl ? "config" : envUrl ? "env" : "none";
+  const baseUrlSource: ZulipBaseUrlSource = configUrl
+    ? "config"
+    : envUrl || envSite || envRealm
+      ? "env"
+      : "none";
 
   return {
     accountId,

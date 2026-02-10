@@ -15,6 +15,9 @@ export type ZulipAccountConfig = {
   enabled?: boolean;
   /** Base URL for the Zulip server (e.g., https://chat.example.com). */
   url?: string;
+  /** Backwards-compatible aliases for url (treated the same as url). */
+  site?: string;
+  realm?: string;
   /** Zulip bot email address. */
   email?: string;
   /** Zulip API key for the bot. */

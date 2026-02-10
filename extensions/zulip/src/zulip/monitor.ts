@@ -316,7 +316,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     if (uploadUrls.length > 0) {
       for (const uploadUrl of uploadUrls) {
         try {
-          const downloaded = await downloadZulipUpload(uploadUrl, client.authHeader, mediaMaxBytes);
+          const downloaded = await downloadZulipUpload(
+            uploadUrl,
+            client.authHeader,
+            mediaMaxBytes,
+            baseUrl,
+          );
           const saved = await saveZulipMediaBuffer({
             core,
             buffer: downloaded.buffer,
@@ -768,6 +773,29 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     pollBackoffMs = 0;
   };
 
+  // Limit concurrent message handlers. This prevents unbounded growth of in-flight
+  // reply generations (which can cause log spam, excessive timers, and memory churn).
+  // Default to 1 for stability; this can be made configurable later if needed.
+  const maxInFlightMessageHandlers = 1;
+  const inFlightMessageHandlers = new Set<Promise<void>>();
+
+  const scheduleMessageHandler = async (message: ZulipMessage): Promise<void> => {
+    while (inFlightMessageHandlers.size >= maxInFlightMessageHandlers) {
+      await Promise.race(inFlightMessageHandlers);
+    }
+
+    let task: Promise<void>;
+    task = handleMessage(message)
+      .catch((err) => {
+        runtime.error?.(`zulip message handler failed: ${String(err)}`);
+      })
+      .finally(() => {
+        inFlightMessageHandlers.delete(task);
+      });
+
+    inFlightMessageHandlers.add(task);
+  };
+
   // Long-polling loop
   while (!opts.abortSignal?.aborted) {
     try {
@@ -813,10 +841,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
       for (const event of events) {
         if (event.type === "message" && event.message) {
-          // Fire-and-forget: don't block the poll loop while generating replies
-          handleMessage(event.message).catch((err) => {
-            runtime.error?.(`zulip message handler failed: ${String(err)}`);
-          });
+          await scheduleMessageHandler(event.message);
         }
       }
     } catch (err) {
