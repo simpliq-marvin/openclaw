@@ -111,6 +111,56 @@ const HttpUrlSchema = z
     return protocol === "http:" || protocol === "https:";
   }, "Expected http:// or https:// URL");
 
+const AgentOrchV1AuthoritySchema = z
+  .object({
+    ianEmails: z.array(z.string()).optional(),
+    haltAllowlistEmails: z.array(z.string()).optional(),
+    haltAllowlistUserIds: z.array(z.string()).optional(),
+    haltAllowBotsInControlStream: z.boolean().optional(),
+    closeAllowlistEmails: z.array(z.string()).optional(),
+    unlatchAllowlistEmails: z.array(z.string()).optional(),
+    resumeAllowlistEmails: z.array(z.string()).optional(),
+    killAllowlistEmails: z.array(z.string()).optional(),
+  })
+  .strict()
+  .optional();
+
+const AgentOrchV1LivenessSchema = z
+  .object({
+    heartbeatSeconds: z.number().int().positive().optional(),
+    emitStillRunning: z.boolean().optional(),
+  })
+  .strict()
+  .optional();
+
+const AgentOrchV1TaxonomySchema = z
+  .object({
+    projectStemRegex: z.string().optional(),
+  })
+  .strict()
+  .optional();
+
+const AgentOrchV1DedupeSchema = z
+  .object({
+    ttlSeconds: z.number().int().positive().optional(),
+    maxEntries: z.number().int().positive().optional(),
+  })
+  .strict()
+  .optional();
+
+const AgentOrchV1Schema = z
+  .object({
+    enabled: z.boolean().optional(),
+    stateDir: z.string().optional(),
+    controlStream: z.string().optional(),
+    authority: AgentOrchV1AuthoritySchema,
+    liveness: AgentOrchV1LivenessSchema,
+    taxonomy: AgentOrchV1TaxonomySchema,
+    dedupe: AgentOrchV1DedupeSchema,
+  })
+  .strict()
+  .optional();
+
 export const OpenClawSchema = z
   .object({
     $schema: z.string().optional(),
@@ -585,6 +635,7 @@ export const OpenClawSchema = z
       .strict()
       .optional(),
     memory: MemorySchema,
+    agentOrchV1: AgentOrchV1Schema,
     skills: z
       .object({
         allowBundled: z.array(z.string()).optional(),

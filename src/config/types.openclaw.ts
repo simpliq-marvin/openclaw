@@ -1,3 +1,4 @@
+import type { AgentOrchV1Config } from "./types.agent-orch.js";
 import type { AgentBinding, AgentsConfig } from "./types.agents.js";
 import type { ApprovalsConfig } from "./types.approvals.js";
 import type { AuthConfig } from "./types.auth.js";
@@ -97,6 +98,7 @@ export type OpenClawConfig = {
   talk?: TalkConfig;
   gateway?: GatewayConfig;
   memory?: MemoryConfig;
+  agentOrchV1?: AgentOrchV1Config;
 };
 
 export type ConfigValidationIssue = {
