@@ -1,3 +1,9 @@
+import { evaluateAgentOrchOutboundGate } from "../../agent-orch-v1/gate.js";
+import { resolveAgentOrchProjectFromOutbound } from "../../agent-orch-v1/project.js";
+import {
+  getSubagentRunById,
+  resolveSubagentRunContextByChildSession,
+} from "../../agents/subagent-registry.js";
 import {
   chunkByParagraph,
   chunkMarkdownTextWithMode,
@@ -446,6 +452,46 @@ async function deliverOutboundPayloadsCore(
   const hookRunner = getGlobalHookRunner();
   const sessionKeyForInternalHooks = params.mirror?.sessionKey;
   for (const payload of normalizedPayloads) {
+    const orchResolved = resolveAgentOrchProjectFromOutbound({
+      cfg,
+      channel,
+      to,
+      threadId: params.threadId,
+      payload,
+    });
+    if (orchResolved) {
+      let runId = orchResolved.context.runId;
+      let runEpochId = orchResolved.context.runEpochId;
+      if ((!runId || runEpochId == null) && sessionKeyForInternalHooks) {
+        const fromSession = resolveSubagentRunContextByChildSession({
+          childSessionKey: sessionKeyForInternalHooks,
+        });
+        if (fromSession) {
+          runId = runId ?? fromSession.runId;
+          if (runEpochId == null && typeof fromSession.epochId === "number") {
+            runEpochId = Math.max(1, Math.floor(fromSession.epochId));
+          }
+        }
+      }
+      if (runId && runEpochId == null) {
+        const run = getSubagentRunById(runId);
+        if (typeof run?.epochId === "number") {
+          runEpochId = Math.max(1, Math.floor(run.epochId));
+        }
+      }
+      const gate = evaluateAgentOrchOutboundGate({
+        cfg,
+        context: {
+          ...orchResolved.context,
+          runId,
+          runEpochId,
+        },
+        project: orchResolved.project,
+      });
+      if (!gate.allow) {
+        continue;
+      }
+    }
     const payloadSummary: NormalizedOutboundPayload = {
       text: payload.text ?? "",
       mediaUrls: payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []),
