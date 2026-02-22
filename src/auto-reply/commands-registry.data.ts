@@ -181,6 +181,14 @@ function buildChatCommands(): ChatCommandDefinition[] {
       category: "management",
     }),
     defineChatCommand({
+      key: "oc",
+      description: "Project operator control plane command (/oc ...).",
+      textAlias: "/oc",
+      acceptsArgs: true,
+      scope: "text",
+      category: "management",
+    }),
+    defineChatCommand({
       key: "approve",
       nativeName: "approve",
       description: "Approve or deny exec requests.",
