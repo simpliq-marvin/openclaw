@@ -1,4 +1,8 @@
 import crypto from "node:crypto";
+import { resolveAgentOrchProjectFromOutbound } from "../agent-orch-v1/project.js";
+import { resolveAgentOrchRunResultPath } from "../agent-orch-v1/runs.js";
+import { buildAgentOrchShortId } from "../agent-orch-v1/short-id.js";
+import { loadAgentOrchProjectState } from "../agent-orch-v1/store.js";
 import { formatThinkingLevels, normalizeThinkLevel } from "../auto-reply/thinking.js";
 import { DEFAULT_SUBAGENT_MAX_SPAWN_DEPTH } from "../config/agent-limits.js";
 import { loadConfig } from "../config/config.js";
@@ -472,15 +476,38 @@ export async function spawnSubagentDirect(
     };
   }
 
+  const resolvedProject = requesterOrigin?.channel
+    ? resolveAgentOrchProjectFromOutbound({
+        cfg,
+        channel: requesterOrigin.channel,
+        to: requesterOrigin.to ?? "",
+        threadId: requesterOrigin.threadId ?? null,
+      })
+    : null;
+  const projectStem = resolvedProject?.project?.projectStem;
+  const epochId = projectStem ? loadAgentOrchProjectState(cfg, projectStem).epochId : undefined;
+  const resultPath = projectStem
+    ? resolveAgentOrchRunResultPath({
+        cfg,
+        projectStem,
+        runId: childRunId,
+      })
+    : undefined;
+  const shortId = buildAgentOrchShortId(childRunId);
+
   registerSubagentRun({
     runId: childRunId,
     childSessionKey,
     requesterSessionKey: requesterInternalKey,
     requesterOrigin,
     requesterDisplayKey,
+    projectStem,
+    epochId,
+    resultPath,
     task,
     cleanup,
     label: label || undefined,
+    shortId,
     model: resolvedModel,
     runTimeoutSeconds,
     expectsCompletionMessage,

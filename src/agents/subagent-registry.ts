@@ -1,3 +1,9 @@
+import { resolveAgentOrchV1Config } from "../agent-orch-v1/config.js";
+import {
+  emitAgentOrchRunSpawnEvent,
+  emitAgentOrchRunTerminalEvent,
+  mapSubagentOutcomeToAgentOrchTerminalStatus,
+} from "../agent-orch-v1/runs.js";
 import { loadConfig } from "../config/config.js";
 import { callGateway } from "../gateway/call.js";
 import { onAgentEvent } from "../infra/agent-events.js";
@@ -82,6 +88,10 @@ function persistSubagentRuns() {
   persistSubagentRunsToDisk(subagentRuns);
 }
 
+function isAgentOrchEnabled(): boolean {
+  return resolveAgentOrchV1Config(loadConfig()).enabled;
+}
+
 const resumedRuns = new Set<string>();
 const endedHookInFlightRunIds = new Set<string>();
 
@@ -142,6 +152,7 @@ async function completeSubagentRun(params: {
   }
 
   let mutated = false;
+  let transitionedToTerminal = false;
   const endedAt = typeof params.endedAt === "number" ? params.endedAt : Date.now();
   if (entry.endedAt !== endedAt) {
     entry.endedAt = endedAt;
@@ -155,9 +166,30 @@ async function completeSubagentRun(params: {
     entry.endedReason = params.reason;
     mutated = true;
   }
+  const terminalStatus =
+    params.reason === SUBAGENT_ENDED_REASON_KILLED
+      ? "cancelled"
+      : mapSubagentOutcomeToAgentOrchTerminalStatus(params.outcome);
+  if (entry.state !== "terminal") {
+    entry.state = "terminal";
+    transitionedToTerminal = true;
+    mutated = true;
+  }
+  if (entry.terminalStatus !== terminalStatus) {
+    entry.terminalStatus = terminalStatus;
+    mutated = true;
+  }
 
   if (mutated) {
     persistSubagentRuns();
+  }
+  if (transitionedToTerminal && entry.projectStem && isAgentOrchEnabled()) {
+    emitAgentOrchRunTerminalEvent({
+      cfg: loadConfig(),
+      projectStem: entry.projectStem,
+      runId: entry.runId,
+      terminalStatus,
+    });
   }
 
   const suppressedForSteerRestart = suppressAnnounceForSteerRestart(entry);
@@ -670,13 +702,18 @@ export function replaceSubagentRunAfterSteer(params: {
 
 export function registerSubagentRun(params: {
   runId: string;
+  parentRunId?: string | null;
   childSessionKey: string;
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
   requesterDisplayKey: string;
+  projectStem?: string;
+  epochId?: number;
+  resultPath?: string;
   task: string;
   cleanup: "delete" | "keep";
   label?: string;
+  shortId?: string;
   model?: string;
   runTimeoutSeconds?: number;
   expectsCompletionMessage?: boolean;
@@ -693,17 +730,23 @@ export function registerSubagentRun(params: {
   const requesterOrigin = normalizeDeliveryContext(params.requesterOrigin);
   subagentRuns.set(params.runId, {
     runId: params.runId,
+    parentRunId: params.parentRunId,
     childSessionKey: params.childSessionKey,
     requesterSessionKey: params.requesterSessionKey,
     requesterOrigin,
     requesterDisplayKey: params.requesterDisplayKey,
+    projectStem: params.projectStem,
+    epochId: params.epochId,
+    resultPath: params.resultPath,
     task: params.task,
     cleanup: params.cleanup,
     expectsCompletionMessage: params.expectsCompletionMessage,
     spawnMode,
     label: params.label,
+    shortId: params.shortId,
     model: params.model,
     runTimeoutSeconds,
+    state: "running",
     createdAt: now,
     startedAt: now,
     archiveAtMs,
@@ -713,6 +756,25 @@ export function registerSubagentRun(params: {
   persistSubagentRuns();
   if (archiveAtMs) {
     startSweeper();
+  }
+  if (params.projectStem && isAgentOrchEnabled()) {
+    const originTo = requesterOrigin?.to?.trim();
+    const originTopic =
+      requesterOrigin?.threadId != null ? String(requesterOrigin.threadId).trim() : undefined;
+    emitAgentOrchRunSpawnEvent({
+      cfg,
+      projectStem: params.projectStem,
+      runId: params.runId,
+      parentRunId: params.parentRunId,
+      epochId: params.epochId,
+      resultPath: params.resultPath,
+      shortId: params.shortId,
+      requesterOrigin: {
+        streamName: originTo && !/^[0-9]+$/.test(originTo) ? originTo : undefined,
+        streamId: originTo && /^[0-9]+$/.test(originTo) ? originTo : undefined,
+        topic: originTopic,
+      },
+    });
   }
   // Wait for subagent completion via gateway RPC (cross-process).
   // The in-process lifecycle listener is a fallback for embedded runs.
@@ -883,6 +945,8 @@ export function markSubagentRunTerminated(params: {
     entry.endedAt = now;
     entry.outcome = { status: "error", error: reason };
     entry.endedReason = SUBAGENT_ENDED_REASON_KILLED;
+    entry.state = "terminal";
+    entry.terminalStatus = "cancelled";
     entry.cleanupHandled = true;
     entry.cleanupCompletedAt = now;
     entry.suppressAnnounceReason = "killed";
@@ -894,6 +958,14 @@ export function markSubagentRunTerminated(params: {
   if (updated > 0) {
     persistSubagentRuns();
     for (const entry of entriesByChildSessionKey.values()) {
+      if (entry.projectStem && isAgentOrchEnabled()) {
+        emitAgentOrchRunTerminalEvent({
+          cfg: loadConfig(),
+          projectStem: entry.projectStem,
+          runId: entry.runId,
+          terminalStatus: "cancelled",
+        });
+      }
       void emitSubagentEndedHookOnce({
         entry,
         reason: SUBAGENT_ENDED_REASON_KILLED,
@@ -912,6 +984,59 @@ export function markSubagentRunTerminated(params: {
 
 export function listSubagentRunsForRequester(requesterSessionKey: string): SubagentRunRecord[] {
   return listRunsForRequesterFromRuns(subagentRuns, requesterSessionKey);
+}
+
+export function getSubagentRunById(runId: string): SubagentRunRecord | undefined {
+  const key = runId.trim();
+  if (!key) {
+    return undefined;
+  }
+  return subagentRuns.get(key);
+}
+
+export function listActiveSubagentRunsForProject(projectStem: string): SubagentRunRecord[] {
+  const stem = projectStem.trim();
+  if (!stem) {
+    return [];
+  }
+  const runs: SubagentRunRecord[] = [];
+  for (const entry of subagentRuns.values()) {
+    if (entry.projectStem !== stem) {
+      continue;
+    }
+    if (entry.state === "terminal" || typeof entry.endedAt === "number") {
+      continue;
+    }
+    runs.push(entry);
+  }
+  runs.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
+  return runs;
+}
+
+export function resolveSubagentRunContextByChildSession(params: {
+  childSessionKey?: string;
+}): { runId: string; projectStem?: string; epochId?: number } | null {
+  const childSessionKey = params.childSessionKey?.trim();
+  if (!childSessionKey) {
+    return null;
+  }
+  let latest: SubagentRunRecord | undefined;
+  for (const entry of subagentRuns.values()) {
+    if (entry.childSessionKey !== childSessionKey) {
+      continue;
+    }
+    if (!latest || (entry.createdAt ?? 0) >= (latest.createdAt ?? 0)) {
+      latest = entry;
+    }
+  }
+  if (!latest) {
+    return null;
+  }
+  return {
+    runId: latest.runId,
+    projectStem: latest.projectStem,
+    epochId: latest.epochId,
+  };
 }
 
 export function countActiveRunsForSession(requesterSessionKey: string): number {

@@ -5,16 +5,23 @@ import type { SpawnSubagentMode } from "./subagent-spawn.js";
 
 export type SubagentRunRecord = {
   runId: string;
+  parentRunId?: string | null;
   childSessionKey: string;
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
   requesterDisplayKey: string;
+  projectStem?: string;
+  epochId?: number;
+  resultPath?: string;
   task: string;
   cleanup: "delete" | "keep";
   label?: string;
+  shortId?: string;
   model?: string;
   runTimeoutSeconds?: number;
   spawnMode?: SpawnSubagentMode;
+  state?: "spawned" | "running" | "terminal";
+  terminalStatus?: "done" | "failed" | "blocked" | "timeout" | "cancelled";
   createdAt: number;
   startedAt?: number;
   endedAt?: number;
