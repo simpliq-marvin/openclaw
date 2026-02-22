@@ -93,7 +93,12 @@ export function resolveGroupSessionKey(ctx: MsgContext): GroupKeyResolution | nu
       ? parts.slice(2).join(":")
       : parts.slice(1).join(":")
     : from;
-  const finalId = id.trim().toLowerCase();
+  let finalId = id.trim().toLowerCase();
+  const topicToken =
+    ctx.MessageThreadId != null ? String(ctx.MessageThreadId).trim().toLowerCase() : "";
+  if (provider === "zulip" && topicToken && !finalId.includes(":topic:")) {
+    finalId = `${finalId}:topic:${encodeURIComponent(topicToken)}`;
+  }
   if (!finalId) {
     return null;
   }
