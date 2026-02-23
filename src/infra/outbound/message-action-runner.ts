@@ -5,6 +5,7 @@ import {
   type RoutingOriginContext,
   type RoutingStructuredErrorPayload,
 } from "../../agent-orch-v1/router.js";
+import { resolveAgentOrchActiveEpochKickoffMid } from "../../agent-orch-v1/store.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import {
   readNumberParam,
@@ -66,6 +67,7 @@ import { resolveChannelTarget, type ResolvedMessagingTarget } from "./target-res
 import { extractToolPayload } from "./tool-payload.js";
 
 const log = createSubsystemLogger("outbound/message-action-runner");
+const INTERNAL_ROUTE_PROJECT_KEY = "__agentOrchRouteProject";
 
 export type MessageActionRunnerGateway = {
   url?: string;
@@ -304,7 +306,8 @@ function maybeApplyRouteEnvelope(params: {
   input: RunMessageActionParams;
   args: Record<string, unknown>;
 }): RoutedErrorResult | null {
-  if (params.input.action !== "send") {
+  const action = params.input.action;
+  if (action !== "send" && action !== "read") {
     return null;
   }
   const route = params.args.route;
@@ -318,6 +321,11 @@ function maybeApplyRouteEnvelope(params: {
     origin: origin ?? undefined,
   });
   if (plan.kind === "error") {
+    if (action === "read") {
+      throw new Error(
+        `routing: read route resolution failed code=${plan.payload.error.code} reason=${plan.payload.error.reason}`,
+      );
+    }
     log.warn(
       `routing: origin missing for fallback reason=${plan.payload.error.reason} project=${plan.payload.error.project} role=${plan.payload.error.role} instance=${plan.payload.error.instance}`,
     );
@@ -330,10 +338,18 @@ function maybeApplyRouteEnvelope(params: {
     params.args.channel = plan.channel;
     params.args.target = plan.target;
     params.args.threadId = plan.threadId;
+    params.args[INTERNAL_ROUTE_PROJECT_KEY] = plan.envelope.project;
     delete params.args.to;
     delete params.args.channelId;
     log.info(
       `routing: resolved project=${plan.envelope.project} role=${plan.envelope.role} instance=${plan.envelope.instance} target=${plan.target} topic=${plan.threadId}`,
+    );
+    return null;
+  }
+
+  if (action === "read") {
+    throw new Error(
+      `routing: read route resolution failed reason=${plan.reason} project=${plan.diagnostics.project} role=${plan.diagnostics.role} instance=${plan.diagnostics.instance}`,
     );
   } else {
     const originalMessage =
@@ -352,6 +368,32 @@ function maybeApplyRouteEnvelope(params: {
     );
   }
   return null;
+}
+
+function maybeApplyRouteReadEpochFence(params: {
+  cfg: OpenClawConfig;
+  action: ChannelMessageActionName;
+  args: Record<string, unknown>;
+}): void {
+  const project = toNonEmptyString(params.args[INTERNAL_ROUTE_PROJECT_KEY]);
+  delete params.args[INTERNAL_ROUTE_PROJECT_KEY];
+  if (params.action !== "read" || !project) {
+    return;
+  }
+  if (toNonEmptyString(params.args.after)) {
+    return;
+  }
+  const activeEpoch = resolveAgentOrchActiveEpochKickoffMid({
+    cfg: params.cfg,
+    projectStem: project,
+  });
+  if (activeEpoch.epochId < 1 || !activeEpoch.kickoffMid) {
+    return;
+  }
+  params.args.after = activeEpoch.kickoffMid;
+  log.info(
+    `epoch: applied read fence project=${project} epoch=${activeEpoch.epochId} kickoffMid=${activeEpoch.kickoffMid}`,
+  );
 }
 
 function maybeApplyZulipTopicGuardrail(params: {
@@ -1059,6 +1101,11 @@ export async function runMessageAction(
 
   const channel = await resolveChannel(cfg, params);
   maybeAliasZulipTopicParams({ action, channel, args: params });
+  maybeApplyRouteReadEpochFence({
+    cfg,
+    action,
+    args: params,
+  });
   maybeApplyZulipTopicGuardrail({
     input,
     action,
