@@ -63,6 +63,10 @@ export type MessageSendResult = {
   mediaUrl: string | null;
   mediaUrls?: string[];
   result?: OutboundDeliveryResult | { messageId: string };
+  dropped?: {
+    code: string;
+    reason?: string;
+  };
   dryRun?: boolean;
 };
 
@@ -230,6 +234,15 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
           }
         : undefined,
     });
+    const lastResult = results.at(-1);
+    const droppedCode =
+      typeof lastResult?.meta?.code === "string" &&
+      String(lastResult.meta.code).trim() &&
+      lastResult.meta?.dropped === true
+        ? String(lastResult.meta.code)
+        : undefined;
+    const droppedReason =
+      typeof lastResult?.meta?.reason === "string" ? String(lastResult.meta.reason) : undefined;
 
     return {
       channel,
@@ -237,7 +250,13 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
       via: "direct",
       mediaUrl: primaryMediaUrl,
       mediaUrls: mirrorMediaUrls.length ? mirrorMediaUrls : undefined,
-      result: results.at(-1),
+      result: lastResult,
+      dropped: droppedCode
+        ? {
+            code: droppedCode,
+            reason: droppedReason,
+          }
+        : undefined,
     };
   }
 

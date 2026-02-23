@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../config/config.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveAgentOrchV1Config } from "./config.js";
 import type { AgentOrchResolvedProject } from "./project.js";
 import {
@@ -10,9 +11,12 @@ import {
 } from "./store.js";
 import type { AgentOrchOutboundContext } from "./types.js";
 
+const log = createSubsystemLogger("agent-orch-v1/gate");
+
 export type AgentOrchOutboundGateDecision = {
   allow: boolean;
   reason?: string;
+  code?: "stale_epoch_dropped";
 };
 
 export function evaluateAgentOrchOutboundGate(params: {
@@ -49,7 +53,10 @@ export function evaluateAgentOrchOutboundGate(params: {
         topic: params.context.topic,
       },
     });
-    return { allow: false, reason: "stale-epoch" };
+    log.info(
+      `epoch: dropped stale outbound project=${params.project.projectStem} runId=${params.context.runId ?? "unknown"} runEpoch=${params.context.runEpochId} currentEpoch=${state.epochId}`,
+    );
+    return { allow: false, reason: "stale-epoch", code: "stale_epoch_dropped" };
   }
   if (
     params.context.runId &&

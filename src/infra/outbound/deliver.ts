@@ -451,6 +451,7 @@ async function deliverOutboundPayloadsCore(
   });
   const hookRunner = getGlobalHookRunner();
   const sessionKeyForInternalHooks = params.mirror?.sessionKey;
+  let sawStaleEpochDrop = false;
   for (const payload of normalizedPayloads) {
     const orchResolved = resolveAgentOrchProjectFromOutbound({
       cfg,
@@ -489,6 +490,9 @@ async function deliverOutboundPayloadsCore(
         project: orchResolved.project,
       });
       if (!gate.allow) {
+        if (gate.code === "stale_epoch_dropped") {
+          sawStaleEpochDrop = true;
+        }
         continue;
       }
     }
@@ -642,6 +646,20 @@ async function deliverOutboundPayloadsCore(
         text: mirrorText,
       });
     }
+  }
+
+  if (results.length === 0 && sawStaleEpochDrop) {
+    return [
+      {
+        channel,
+        messageId: "stale_epoch_dropped",
+        meta: {
+          dropped: true,
+          code: "stale_epoch_dropped",
+          reason: "stale-epoch",
+        },
+      },
+    ];
   }
 
   return results;

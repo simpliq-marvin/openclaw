@@ -76,7 +76,7 @@ describe("agent-orch-v1 outbound gate", () => {
           streamName: "engineering",
           topic: "project-foo",
           runId: "run-epoch-old",
-          runEpochId: 1,
+          runEpochId: 0,
         },
         project: {
           projectStem: "project-foo",
@@ -86,7 +86,11 @@ describe("agent-orch-v1 outbound gate", () => {
           topic: "project-foo",
         },
       });
-      expect(decision).toEqual({ allow: false, reason: "stale-epoch" });
+      expect(decision).toEqual({
+        allow: false,
+        reason: "stale-epoch",
+        code: "stale_epoch_dropped",
+      });
     });
   });
 });

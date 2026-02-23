@@ -51,4 +51,30 @@ describe("sendMessage", () => {
       }),
     );
   });
+
+  it("returns structured dropped result when outbound is fenced by stale epoch", async () => {
+    mocks.deliverOutboundPayloads.mockResolvedValue([
+      {
+        channel: "zulip",
+        messageId: "stale_epoch_dropped",
+        meta: {
+          dropped: true,
+          code: "stale_epoch_dropped",
+          reason: "stale-epoch",
+        },
+      },
+    ]);
+
+    const result = await sendMessage({
+      cfg: {},
+      channel: "zulip",
+      to: "zulip:stream:03-flat-team-engineer",
+      content: "hello",
+    });
+
+    expect(result.dropped).toEqual({
+      code: "stale_epoch_dropped",
+      reason: "stale-epoch",
+    });
+  });
 });

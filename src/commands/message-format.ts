@@ -302,6 +302,10 @@ export function formatMessageCliText(result: MessageActionRunResult): string[] {
   if (result.kind === "send") {
     if (result.handledBy === "core" && result.sendResult) {
       const send = result.sendResult;
+      if (send.dropped?.code) {
+        const reason = send.dropped.reason ? ` reason=${send.dropped.reason}` : "";
+        return [muted(`[dropped] code=${send.dropped.code}${reason}`)];
+      }
       if (send.via === "direct") {
         const directResult = send.result as OutboundDeliveryResult | undefined;
         return [ok(formatOutboundDeliverySummary(send.channel, directResult))];
