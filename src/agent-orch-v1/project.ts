@@ -3,12 +3,8 @@ import type { ReplyPayload } from "../auto-reply/types.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentOrchV1Config } from "./config.js";
 import { resolveAgentOrchInboundContext, resolveAgentOrchOutboundContext } from "./routing.js";
-import { deriveLaneRoleFromStream, parseProjectTopic } from "./taxonomy.js";
-import type {
-  AgentOrchInboundContext,
-  AgentOrchOutboundContext,
-  AgentOrchParsedProjectTopic,
-} from "./types.js";
+import { resolveAgentOrchLaneByZulipStream } from "./topology.js";
+import type { AgentOrchInboundContext, AgentOrchOutboundContext } from "./types.js";
 
 export type AgentOrchResolvedProject = {
   projectStem: string;
@@ -23,30 +19,23 @@ function parseProjectFromTopic(params: {
   topic?: string;
   streamName?: string;
   cfg: OpenClawConfig;
-}): AgentOrchParsedProjectTopic | null {
-  const resolved = resolveAgentOrchV1Config(params.cfg);
-  const laneRole = deriveLaneRoleFromStream(params.streamName);
-  return parseProjectTopic({
-    topic: params.topic,
-    laneRole,
-    projectStemRegex: resolved.projectStemRegex,
-  });
-}
-
-function buildResolvedProject(
-  parsed: AgentOrchParsedProjectTopic,
-  context: AgentOrchInboundContext | AgentOrchOutboundContext,
-): AgentOrchResolvedProject | null {
-  const topic = context.topic?.trim();
+}): AgentOrchResolvedProject | null {
+  const topic = params.topic?.trim();
   if (!topic) {
     return null;
   }
+  const lane = resolveAgentOrchLaneByZulipStream({
+    cfg: params.cfg,
+    streamName: params.streamName,
+  });
+  if (!lane) {
+    return null;
+  }
   return {
-    projectStem: parsed.projectStem,
-    laneRole: parsed.laneRole,
-    laneInstance: parsed.laneInstance,
-    streamName: context.streamName,
-    streamId: context.streamId,
+    projectStem: topic,
+    laneRole: lane.role,
+    laneInstance: lane.instance,
+    streamName: params.streamName,
     topic,
   };
 }
@@ -66,7 +55,12 @@ export function resolveAgentOrchProjectFromInbound(
   });
   return {
     context,
-    project: parsed ? buildResolvedProject(parsed, context) : null,
+    project: parsed
+      ? {
+          ...parsed,
+          streamId: context.streamId,
+        }
+      : null,
   };
 }
 
@@ -93,7 +87,12 @@ export function resolveAgentOrchProjectFromOutbound(params: {
   });
   return {
     context,
-    project: parsed ? buildResolvedProject(parsed, context) : null,
+    project: parsed
+      ? {
+          ...parsed,
+          streamId: context.streamId,
+        }
+      : null,
   };
 }
 
