@@ -34,6 +34,11 @@ export type ResolvedAgentOrchV1Config = {
     ttlSeconds: number;
     maxEntries: number;
   };
+  routing: {
+    zulip: {
+      roleInstanceMap: Map<string, string>;
+    };
+  };
 };
 
 function normalizeEmailSet(values: string[] | undefined, fallback: string[] = []): Set<string> {
@@ -54,6 +59,22 @@ function normalizeIdSet(values: string[] | undefined): Set<string> {
     if (normalized) {
       out.add(normalized);
     }
+  }
+  return out;
+}
+
+function normalizeRoleInstanceMap(values: Record<string, string> | undefined): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!values || typeof values !== "object") {
+    return out;
+  }
+  for (const [keyRaw, streamRaw] of Object.entries(values)) {
+    const key = keyRaw.trim().toLowerCase();
+    const stream = streamRaw.trim();
+    if (!key || !stream) {
+      continue;
+    }
+    out.set(key, stream);
   }
   return out;
 }
@@ -128,6 +149,11 @@ export function resolveAgentOrchV1Config(cfg: OpenClawConfig): ResolvedAgentOrch
         raw.dedupe?.maxEntries,
         DEFAULT_AGENT_ORCH_V1_DEDUPE_MAX_ENTRIES,
       ),
+    },
+    routing: {
+      zulip: {
+        roleInstanceMap: normalizeRoleInstanceMap(raw.routing?.zulip?.roleInstanceMap),
+      },
     },
   };
 }

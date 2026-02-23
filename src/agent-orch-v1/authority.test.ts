@@ -26,6 +26,11 @@ const baseConfig: ResolvedAgentOrchV1Config = {
     ttlSeconds: 3600,
     maxEntries: 32,
   },
+  routing: {
+    zulip: {
+      roleInstanceMap: new Map(),
+    },
+  },
 };
 
 describe("agent-orch-v1 authority", () => {

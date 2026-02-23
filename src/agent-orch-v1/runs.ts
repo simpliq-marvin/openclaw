@@ -37,7 +37,7 @@ export function mapSubagentOutcomeToAgentOrchTerminalStatus(
     return "timeout";
   }
   if (status === "error") {
-    const errorText = outcome.error?.toLowerCase() ?? "";
+    const errorText = outcome?.error?.toLowerCase() ?? "";
     if (errorText.includes("blocked")) {
       return "blocked";
     }

@@ -148,6 +148,20 @@ const AgentOrchV1DedupeSchema = z
   .strict()
   .optional();
 
+const AgentOrchV1ZulipRoutingSchema = z
+  .object({
+    roleInstanceMap: z.record(z.string(), z.string()).optional(),
+  })
+  .strict()
+  .optional();
+
+const AgentOrchV1RoutingSchema = z
+  .object({
+    zulip: AgentOrchV1ZulipRoutingSchema,
+  })
+  .strict()
+  .optional();
+
 const AgentOrchV1Schema = z
   .object({
     enabled: z.boolean().optional(),
@@ -157,6 +171,7 @@ const AgentOrchV1Schema = z
     liveness: AgentOrchV1LivenessSchema,
     taxonomy: AgentOrchV1TaxonomySchema,
     dedupe: AgentOrchV1DedupeSchema,
+    routing: AgentOrchV1RoutingSchema,
   })
   .strict()
   .optional();

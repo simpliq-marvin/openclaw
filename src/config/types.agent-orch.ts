@@ -33,6 +33,19 @@ export type AgentOrchV1DedupeConfig = {
   maxEntries?: number;
 };
 
+export type AgentOrchV1ZulipRoutingConfig = {
+  /**
+   * Route map for role/instance to Zulip stream.
+   * Keys are `role` or `role#<instance>` (for example `engineer` or `engineer#2`).
+   */
+  roleInstanceMap?: Record<string, string>;
+};
+
+export type AgentOrchV1RoutingConfig = {
+  /** Zulip adapter routing config. */
+  zulip?: AgentOrchV1ZulipRoutingConfig;
+};
+
 export type AgentOrchV1Config = {
   enabled?: boolean;
   stateDir?: string;
@@ -41,4 +54,5 @@ export type AgentOrchV1Config = {
   liveness?: AgentOrchV1LivenessConfig;
   taxonomy?: AgentOrchV1TaxonomyConfig;
   dedupe?: AgentOrchV1DedupeConfig;
+  routing?: AgentOrchV1RoutingConfig;
 };
