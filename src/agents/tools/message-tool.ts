@@ -40,12 +40,29 @@ function actionNeedsExplicitTarget(action: ChannelMessageActionName): boolean {
   return EXPLICIT_TARGET_ACTIONS.has(action);
 }
 function buildRoutingSchema() {
+  const routeSchema = Type.Object(
+    {
+      project: Type.String({ description: "Project routing key (used as topic in Zulip)." }),
+      role: Type.String({ description: "Role key (supports role#instance shorthand)." }),
+      instance: Type.Optional(
+        Type.Number({
+          description: "Role instance (>=1). Defaults to 1 if omitted.",
+          minimum: 1,
+        }),
+      ),
+    },
+    {
+      description:
+        "Optional channel-agnostic route envelope. When provided, target/thread are resolved by adapter.",
+    },
+  );
   return {
     channel: Type.Optional(Type.String()),
     target: Type.Optional(channelTargetSchema({ description: "Target channel/user id or name." })),
     targets: Type.Optional(channelTargetsSchema()),
     accountId: Type.Optional(Type.String()),
     dryRun: Type.Optional(Type.Boolean()),
+    route: Type.Optional(routeSchema),
   };
 }
 
@@ -606,6 +623,9 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
           (typeof params.target === "string" && params.target.trim().length > 0) ||
           (typeof params.to === "string" && params.to.trim().length > 0) ||
           (typeof params.channelId === "string" && params.channelId.trim().length > 0) ||
+          (params.route != null &&
+            typeof params.route === "object" &&
+            !Array.isArray(params.route)) ||
           (Array.isArray(params.targets) &&
             params.targets.some((value) => typeof value === "string" && value.trim().length > 0));
         if (!explicitTarget) {
