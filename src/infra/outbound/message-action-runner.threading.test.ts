@@ -3,11 +3,13 @@ import { slackPlugin } from "../../../extensions/slack/src/channel.js";
 import { telegramPlugin } from "../../../extensions/telegram/src/channel.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
-import { createTestRegistry } from "../../test-utils/channel-plugins.js";
+import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 
 const mocks = vi.hoisted(() => ({
   executeSendAction: vi.fn(),
   recordSessionMetaFromInbound: vi.fn(async () => ({ ok: true })),
+  loadSessionStore: vi.fn(() => ({})),
+  resolveStorePath: vi.fn(() => "/tmp/openclaw-test-sessions.json"),
 }));
 
 vi.mock("./outbound-send-service.js", async () => {
@@ -27,6 +29,8 @@ vi.mock("../../config/sessions.js", async () => {
   return {
     ...actual,
     recordSessionMetaFromInbound: mocks.recordSessionMetaFromInbound,
+    loadSessionStore: mocks.loadSessionStore,
+    resolveStorePath: mocks.resolveStorePath,
   };
 });
 
@@ -49,23 +53,75 @@ const telegramConfig = {
   },
 } as OpenClawConfig;
 
+const zulipConfig = {
+  channels: {
+    zulip: {
+      enabled: true,
+    },
+  },
+} as OpenClawConfig;
+
+const routedZulipConfig = {
+  ...zulipConfig,
+  agentOrchV1: {
+    routing: {
+      zulip: {
+        roleInstanceMap: {
+          engineer: "eng-stream",
+          "engineer#2": "eng-stream-2",
+        },
+      },
+    },
+  },
+} as OpenClawConfig;
+
+const zulipPlugin = {
+  ...createOutboundTestPlugin({
+    id: "zulip",
+    capabilities: { chatTypes: ["direct", "group", "channel"] },
+    outbound: {
+      deliveryMode: "direct",
+      sendText: async () => ({ channel: "zulip", messageId: "zulip-test" }),
+    },
+  }),
+  messaging: {
+    normalizeTarget: (raw: string) => raw.trim(),
+    targetResolver: {
+      looksLikeId: (raw: string) =>
+        /^(?:zulip:)?(?:stream|channel|user):/i.test(raw.trim()) || raw.trim().startsWith("#"),
+      hint: "Use zulip:stream:<stream> for stream targets.",
+    },
+  },
+};
+
 async function runThreadingAction(params: {
   cfg: OpenClawConfig;
   actionParams: Record<string, unknown>;
   toolContext?: Record<string, unknown>;
+  sessionKey?: string;
 }) {
-  await runMessageAction({
+  const result = await runMessageAction({
     cfg: params.cfg,
     action: "send",
     params: params.actionParams as never,
     toolContext: params.toolContext as never,
     agentId: "main",
+    sessionKey: params.sessionKey,
   });
-  return mocks.executeSendAction.mock.calls[0]?.[0] as {
-    threadId?: string;
-    replyToId?: string;
-    ctx?: { agentId?: string; mirror?: { sessionKey?: string }; params?: Record<string, unknown> };
-  };
+  const call = mocks.executeSendAction.mock.calls[0]?.[0] as
+    | {
+        to?: string;
+        threadId?: string;
+        replyToId?: string;
+        message?: string;
+        ctx?: {
+          agentId?: string;
+          mirror?: { sessionKey?: string };
+          params?: Record<string, unknown>;
+        };
+      }
+    | undefined;
+  return { result, call };
 }
 
 function mockHandledSendAction() {
@@ -107,8 +163,17 @@ describe("runMessageAction threading auto-injection", () => {
           source: "test",
           plugin: telegramPlugin,
         },
+        {
+          pluginId: "zulip",
+          source: "test",
+          plugin: zulipPlugin,
+        },
       ]),
     );
+    mocks.loadSessionStore.mockReset();
+    mocks.loadSessionStore.mockReturnValue({});
+    mocks.resolveStorePath.mockReset();
+    mocks.resolveStorePath.mockReturnValue("/tmp/openclaw-test-sessions.json");
   });
 
   afterEach(() => {
@@ -147,8 +212,8 @@ describe("runMessageAction threading auto-injection", () => {
       },
     });
 
-    expect(call?.ctx?.agentId).toBe("main");
-    expect(call?.ctx?.mirror?.sessionKey).toBe(testCase.expectedSessionKey);
+    expect(call.call?.ctx?.agentId).toBe("main");
+    expect(call.call?.ctx?.mirror?.sessionKey).toBe(testCase.expectedSessionKey);
   });
 
   it.each([
@@ -180,9 +245,9 @@ describe("runMessageAction threading auto-injection", () => {
       toolContext: defaultTelegramToolContext,
     });
 
-    expect(call?.ctx?.params?.threadId).toBe(testCase.expectedThreadId);
+    expect(call.call?.ctx?.params?.threadId).toBe(testCase.expectedThreadId);
     if (testCase.expectedThreadId !== undefined) {
-      expect(call?.threadId).toBe(testCase.expectedThreadId);
+      expect(call.call?.threadId).toBe(testCase.expectedThreadId);
     }
   });
 
@@ -200,8 +265,8 @@ describe("runMessageAction threading auto-injection", () => {
       toolContext: defaultTelegramToolContext,
     });
 
-    expect(call?.threadId).toBe("999");
-    expect(call?.ctx?.params?.threadId).toBe("999");
+    expect(call.call?.threadId).toBe("999");
+    expect(call.call?.ctx?.params?.threadId).toBe("999");
   });
 
   it("threads explicit replyTo through executeSendAction", async () => {
@@ -218,7 +283,168 @@ describe("runMessageAction threading auto-injection", () => {
       toolContext: defaultTelegramToolContext,
     });
 
-    expect(call?.replyToId).toBe("777");
-    expect(call?.ctx?.params?.replyTo).toBe("777");
+    expect(call.call?.replyToId).toBe("777");
+    expect(call.call?.ctx?.params?.replyTo).toBe("777");
+  });
+
+  it("resolves routed send to mapped Zulip stream/topic", async () => {
+    mockHandledSendAction();
+
+    const { call } = await runThreadingAction({
+      cfg: routedZulipConfig,
+      actionParams: {
+        route: {
+          project: "ft-project-001",
+          role: "engineer#2",
+        },
+        message: "ship it",
+      },
+    });
+
+    expect(call?.to).toBe("zulip:stream:eng-stream-2");
+    expect(call?.threadId).toBe("ft-project-001");
+    expect(call?.ctx?.params?.channel).toBe("zulip");
+  });
+
+  it("falls back to origin topic with sanitized diagnostics for unmapped route", async () => {
+    mockHandledSendAction();
+
+    const { call } = await runThreadingAction({
+      cfg: routedZulipConfig,
+      actionParams: {
+        route: {
+          project: "ft-project-001",
+          role: "qa",
+        },
+        message: "ping @ops",
+      },
+      toolContext: {
+        currentChannelProvider: "zulip",
+        currentChannelId: "zulip:stream:origin-stream",
+        currentThreadTs: "origin-topic",
+      },
+    });
+
+    expect(call?.to).toBe("zulip:stream:origin-stream");
+    expect(call?.threadId).toBe("origin-topic");
+    expect(call?.message).toContain(
+      "[routing-failure] reason=unmapped-role-instance project=ft-project-001 role=qa instance=1",
+    );
+    expect(call?.message).toContain("@\u200bops");
+    expect(call?.message).not.toContain("@ops");
+  });
+
+  it("returns structured routing error when route fails without origin", async () => {
+    mockHandledSendAction();
+
+    const { result, call } = await runThreadingAction({
+      cfg: routedZulipConfig,
+      actionParams: {
+        route: {
+          project: "ft-project-001",
+        },
+        message: "hello",
+      },
+    });
+
+    expect(call).toBeUndefined();
+    expect(result).toEqual({
+      kind: "error",
+      action: "send",
+      channel: "zulip",
+      handledBy: "core",
+      payload: {
+        ok: false,
+        error: {
+          code: "routing_origin_missing",
+          message: "routing: origin context missing for routing fallback",
+          reason: "missing-role",
+          project: "ft-project-001",
+          role: "unknown",
+          instance: "1",
+        },
+      },
+      dryRun: false,
+    });
+  });
+
+  it("autofills missing Zulip topic from inbound origin context", async () => {
+    mockHandledSendAction();
+
+    const { call } = await runThreadingAction({
+      cfg: zulipConfig,
+      actionParams: {
+        channel: "zulip",
+        target: "zulip:stream:eng-stream",
+        message: "hello",
+      },
+      toolContext: {
+        currentChannelProvider: "zulip",
+        currentChannelId: "zulip:stream:origin-stream",
+        currentThreadTs: "origin-topic",
+      },
+    });
+
+    expect(call?.to).toBe("zulip:stream:eng-stream");
+    expect(call?.threadId).toBe("origin-topic");
+  });
+
+  it("autofills missing Zulip topic from session metadata when inbound context is absent", async () => {
+    mockHandledSendAction();
+    mocks.loadSessionStore.mockReturnValue({
+      "agent:main:zulip:group:origin-stream": {
+        sessionId: "session-1",
+        updatedAt: Date.now(),
+        origin: {
+          provider: "zulip",
+          to: "zulip:stream:session-origin-stream",
+          threadId: "session-topic",
+        },
+      },
+    });
+
+    const { call } = await runThreadingAction({
+      cfg: zulipConfig,
+      sessionKey: "agent:main:zulip:group:origin-stream",
+      actionParams: {
+        channel: "zulip",
+        target: "zulip:stream:eng-stream",
+        message: "hello",
+      },
+    });
+
+    expect(call?.threadId).toBe("session-topic");
+  });
+
+  it("prefers inbound origin over session metadata for Zulip topic autofill", async () => {
+    mockHandledSendAction();
+    mocks.loadSessionStore.mockReturnValue({
+      "agent:main:zulip:group:origin-stream": {
+        sessionId: "session-1",
+        updatedAt: Date.now(),
+        origin: {
+          provider: "zulip",
+          to: "zulip:stream:session-origin-stream",
+          threadId: "session-topic",
+        },
+      },
+    });
+
+    const { call } = await runThreadingAction({
+      cfg: zulipConfig,
+      sessionKey: "agent:main:zulip:group:origin-stream",
+      actionParams: {
+        channel: "zulip",
+        target: "zulip:stream:eng-stream",
+        message: "hello",
+      },
+      toolContext: {
+        currentChannelProvider: "zulip",
+        currentChannelId: "zulip:stream:origin-stream",
+        currentThreadTs: "inbound-topic",
+      },
+    });
+
+    expect(call?.threadId).toBe("inbound-topic");
   });
 });

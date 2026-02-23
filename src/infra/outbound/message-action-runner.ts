@@ -1,4 +1,10 @@
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import {
+  buildRoutingFailureFallbackMessage,
+  resolveRouteSendPlan,
+  type RoutingOriginContext,
+  type RoutingStructuredErrorPayload,
+} from "../../agent-orch-v1/router.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import {
   readNumberParam,
@@ -13,6 +19,13 @@ import type {
   ChannelThreadingToolContext,
 } from "../../channels/plugins/types.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import {
+  loadSessionStore,
+  parseSessionThreadInfo,
+  resolveStorePath,
+} from "../../config/sessions.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { deliveryContextFromSession } from "../../utils/delivery-context.js";
 import {
   isDeliverableMessageChannel,
   normalizeMessageChannel,
@@ -52,6 +65,8 @@ import { ensureOutboundSessionEntry, resolveOutboundSessionRoute } from "./outbo
 import { resolveChannelTarget, type ResolvedMessagingTarget } from "./target-resolver.js";
 import { extractToolPayload } from "./tool-payload.js";
 
+const log = createSubsystemLogger("outbound/message-action-runner");
+
 export type MessageActionRunnerGateway = {
   url?: string;
   token?: string;
@@ -86,6 +101,237 @@ function resolveAndApplyOutboundThreadId(
     params.threadId = resolved;
   }
   return resolved ?? undefined;
+}
+
+type RoutedErrorResult = {
+  kind: "error";
+  channel: ChannelId;
+  action: "send";
+  handledBy: "core";
+  payload: RoutingStructuredErrorPayload;
+  dryRun: boolean;
+};
+
+type ResolvedZulipOriginContext = RoutingOriginContext & {
+  source: "inbound" | "session";
+};
+
+function toNonEmptyString(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const normalized = String(Math.trunc(value)).trim();
+    return normalized || undefined;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function parseZulipStream(raw: unknown): string | undefined {
+  const value = toNonEmptyString(raw);
+  if (!value) {
+    return undefined;
+  }
+  const withProvider = value.match(/^zulip:(?:stream|channel):([^:]+)(?::topic:.+)?$/i);
+  if (withProvider?.[1]) {
+    return withProvider[1].trim() || undefined;
+  }
+  const short = value.match(/^(?:stream|channel):([^:]+)(?::topic:.+)?$/i);
+  if (short?.[1]) {
+    return short[1].trim() || undefined;
+  }
+  return value;
+}
+
+function hasZulipTopicInTarget(target: string): boolean {
+  return /:topic:/i.test(target);
+}
+
+function isLikelyZulipStreamTarget(target: unknown): target is string {
+  const value = toNonEmptyString(target);
+  if (!value) {
+    return false;
+  }
+  return /^zulip:(?:stream|channel):/i.test(value) || /^(?:stream|channel):/i.test(value);
+}
+
+function resolveInboundZulipOriginContext(
+  toolContext?: ChannelThreadingToolContext,
+): ResolvedZulipOriginContext | null {
+  const provider = normalizeMessageChannel(toolContext?.currentChannelProvider);
+  if (provider !== "zulip") {
+    return null;
+  }
+  const stream = parseZulipStream(toolContext?.currentChannelId);
+  const topic = toNonEmptyString(toolContext?.currentThreadTs);
+  if (!stream || !topic) {
+    return null;
+  }
+  return {
+    channel: "zulip",
+    stream,
+    topic,
+    source: "inbound",
+  };
+}
+
+function resolveSessionZulipOriginContext(
+  input: RunMessageActionParams,
+): ResolvedZulipOriginContext | null {
+  const sessionKey = input.sessionKey?.trim();
+  if (!sessionKey) {
+    return null;
+  }
+  try {
+    const storePath = resolveStorePath(input.cfg.session?.store);
+    const store = loadSessionStore(storePath);
+    const { baseSessionKey } = parseSessionThreadInfo(sessionKey);
+    const candidateKeys = [sessionKey];
+    if (baseSessionKey && baseSessionKey !== sessionKey) {
+      candidateKeys.push(baseSessionKey);
+    }
+    for (const key of candidateKeys) {
+      const entry = store[key];
+      if (!entry) {
+        continue;
+      }
+      const delivery = deliveryContextFromSession(entry);
+      const channel = normalizeMessageChannel(
+        toNonEmptyString(entry.origin?.provider) ??
+          toNonEmptyString(entry.origin?.surface) ??
+          toNonEmptyString(delivery?.channel) ??
+          toNonEmptyString(entry.channel) ??
+          toNonEmptyString(entry.lastChannel),
+      );
+      if (channel !== "zulip") {
+        continue;
+      }
+      const stream = parseZulipStream(
+        toNonEmptyString(entry.origin?.to) ??
+          toNonEmptyString(delivery?.to) ??
+          toNonEmptyString(entry.lastTo),
+      );
+      const topic =
+        toNonEmptyString(entry.origin?.threadId) ??
+        toNonEmptyString(delivery?.threadId) ??
+        toNonEmptyString(entry.lastThreadId);
+      if (!stream || !topic) {
+        continue;
+      }
+      return {
+        channel: "zulip",
+        stream,
+        topic,
+        source: "session",
+      };
+    }
+  } catch {
+    // Best-effort origin recovery; ignore session read failures.
+  }
+  return null;
+}
+
+function resolveZulipOriginContext(
+  input: RunMessageActionParams,
+): ResolvedZulipOriginContext | null {
+  return (
+    resolveInboundZulipOriginContext(input.toolContext) ?? resolveSessionZulipOriginContext(input)
+  );
+}
+
+function buildRoutingErrorResult(params: {
+  payload: RoutingStructuredErrorPayload;
+  dryRun: boolean;
+}): RoutedErrorResult {
+  return {
+    kind: "error",
+    channel: "zulip",
+    action: "send",
+    handledBy: "core",
+    payload: params.payload,
+    dryRun: params.dryRun,
+  };
+}
+
+function maybeApplyRouteEnvelope(params: {
+  input: RunMessageActionParams;
+  args: Record<string, unknown>;
+}): RoutedErrorResult | null {
+  if (params.input.action !== "send") {
+    return null;
+  }
+  const route = params.args.route;
+  if (!route || typeof route !== "object" || Array.isArray(route)) {
+    return null;
+  }
+  const origin = resolveZulipOriginContext(params.input);
+  const plan = resolveRouteSendPlan({
+    cfg: params.input.cfg,
+    route,
+    origin: origin ?? undefined,
+  });
+  if (plan.kind === "error") {
+    log.warn(
+      `routing: origin missing for fallback reason=${plan.payload.error.reason} project=${plan.payload.error.project} role=${plan.payload.error.role} instance=${plan.payload.error.instance}`,
+    );
+    return buildRoutingErrorResult({
+      payload: plan.payload,
+      dryRun: Boolean(params.input.dryRun ?? readBooleanParam(params.args, "dryRun")),
+    });
+  }
+  if (plan.kind === "resolved") {
+    params.args.channel = plan.channel;
+    params.args.target = plan.target;
+    params.args.threadId = plan.threadId;
+    delete params.args.to;
+    delete params.args.channelId;
+    log.info(
+      `routing: resolved project=${plan.envelope.project} role=${plan.envelope.role} instance=${plan.envelope.instance} target=${plan.target} topic=${plan.threadId}`,
+    );
+  } else {
+    const originalMessage =
+      typeof params.args.message === "string" ? params.args.message : undefined;
+    params.args.channel = plan.channel;
+    params.args.target = plan.target;
+    params.args.threadId = plan.threadId;
+    params.args.message = buildRoutingFailureFallbackMessage({
+      diagnosticTag: plan.diagnosticTag,
+      originalMessage,
+    });
+    delete params.args.to;
+    delete params.args.channelId;
+    log.warn(
+      `routing: fallback reason=${plan.reason} target=${plan.target} topic=${plan.threadId} source=${origin?.source ?? "none"}`,
+    );
+  }
+  return null;
+}
+
+function maybeApplyZulipTopicGuardrail(params: {
+  input: RunMessageActionParams;
+  action: ChannelMessageActionName;
+  channel: ChannelId;
+  args: Record<string, unknown>;
+}): void {
+  if (params.action !== "send" || params.channel !== "zulip") {
+    return;
+  }
+  if (toNonEmptyString(params.args.threadId)) {
+    return;
+  }
+  const target = toNonEmptyString(params.args.to);
+  if (!target || !isLikelyZulipStreamTarget(target) || hasZulipTopicInTarget(target)) {
+    return;
+  }
+  const origin = resolveZulipOriginContext(params.input);
+  if (!origin) {
+    return;
+  }
+  params.args.threadId = origin.topic;
+  log.info(
+    `routing: guardrail autofilled topic source=${origin.source} stream=${origin.stream} topic=${origin.topic}`,
+  );
 }
 
 export type RunMessageActionParams = {
@@ -151,7 +397,8 @@ export type MessageActionRunResult =
       payload: unknown;
       toolResult?: AgentToolResult<unknown>;
       dryRun: boolean;
-    };
+    }
+  | RoutedErrorResult;
 
 export function getToolResult(
   result: MessageActionRunResult,
@@ -346,6 +593,15 @@ async function handleBroadcastAction(
             target: resolved.target.to,
           },
         });
+        if (sendResult.kind === "error") {
+          results.push({
+            channel: targetChannel,
+            to: resolved.target.to,
+            ok: false,
+            error: `${sendResult.payload.error.code}: ${sendResult.payload.error.message}`,
+          });
+          continue;
+        }
         results.push({
           channel: targetChannel,
           to: resolved.target.to,
@@ -706,6 +962,10 @@ export async function runMessageAction(
   if (action === "broadcast") {
     return handleBroadcastAction(input, params);
   }
+  const routedError = maybeApplyRouteEnvelope({ input, args: params });
+  if (routedError) {
+    return routedError;
+  }
 
   const explicitTarget = typeof params.target === "string" ? params.target.trim() : "";
   const hasLegacyTarget =
@@ -752,6 +1012,12 @@ export async function runMessageAction(
   }
 
   const channel = await resolveChannel(cfg, params);
+  maybeApplyZulipTopicGuardrail({
+    input,
+    action,
+    channel,
+    args: params,
+  });
   const accountId = readStringParam(params, "accountId") ?? input.defaultAccountId;
   if (accountId) {
     params.accountId = accountId;
