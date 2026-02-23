@@ -6,8 +6,10 @@ import {
   getAgentOrchControlDedupeEntry,
   loadAgentOrchProjectState,
   recordAgentOrchControlDedupeEntry,
+  resolveAgentOrchActiveEpochKickoffMid,
   resolveAgentOrchExternalLatchState,
   setAgentOrchProjectHalted,
+  startAgentOrchEpochFromKickoff,
   unlatchAgentOrchProject,
 } from "./store.js";
 
@@ -51,9 +53,58 @@ describe("agent-orch-v1 store", () => {
 
       const unlatched = unlatchAgentOrchProject({ cfg, projectStem: stem });
       const resumed = setAgentOrchProjectHalted({ cfg, projectStem: stem, halted: false });
-      expect(unlatched.epochId).toBeGreaterThan(1);
+      expect(unlatched.epochId).toBeGreaterThanOrEqual(1);
       expect(loadAgentOrchProjectState(cfg, stem).closedEpoch).toBeNull();
       expect(resolveAgentOrchExternalLatchState(resumed)).toBe("OPEN");
+    });
+  });
+
+  it("starts a new epoch from kickoff message and records kickoff metadata", async () => {
+    await withTempHome(async () => {
+      const cfg = buildCfg();
+      const started = startAgentOrchEpochFromKickoff({
+        cfg,
+        projectStem: "project-foo",
+        kickoffMid: "87654321",
+        streamName: "01-flat-team-orchestrator",
+        topic: "project-foo",
+        laneRole: "orchestrator",
+        laneInstance: 1,
+      });
+      expect(started.started).toBe(true);
+      expect(started.state.epochId).toBe(1);
+      expect(started.state.epochs["1"]).toMatchObject({
+        kickoffMid: "87654321",
+      });
+      expect(resolveAgentOrchActiveEpochKickoffMid({ cfg, projectStem: "project-foo" })).toEqual(
+        expect.objectContaining({
+          epochId: 1,
+          kickoffMid: "87654321",
+        }),
+      );
+    });
+  });
+
+  it("does not auto-start a new kickoff epoch while project is halted", async () => {
+    await withTempHome(async () => {
+      const cfg = buildCfg();
+      setAgentOrchProjectHalted({
+        cfg,
+        projectStem: "project-foo",
+        halted: true,
+      });
+      const started = startAgentOrchEpochFromKickoff({
+        cfg,
+        projectStem: "project-foo",
+        kickoffMid: "999",
+        streamName: "01-flat-team-orchestrator",
+        topic: "project-foo",
+        laneRole: "orchestrator",
+        laneInstance: 1,
+      });
+      expect(started.started).toBe(false);
+      expect(started.state.epochId).toBe(0);
+      expect(Object.keys(started.state.epochs)).toHaveLength(0);
     });
   });
 });

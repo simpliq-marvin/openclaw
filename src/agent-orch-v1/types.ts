@@ -46,9 +46,15 @@ export type AgentOrchProjectLane = {
 
 export type AgentOrchExternalLatchState = "OPEN" | "CLOSED" | "HALTED";
 
+export type AgentOrchProjectEpoch = {
+  kickoffMid: string;
+  startedAt: string;
+};
+
 export type AgentOrchProjectState = {
   projectStem: string;
   epochId: number;
+  epochs: Record<string, AgentOrchProjectEpoch>;
   closedEpoch: number | null;
   halted: boolean;
   origin?: AgentOrchProjectOrigin;
@@ -58,8 +64,9 @@ export type AgentOrchProjectState = {
 };
 
 export type AgentOrchProjectStatePatch = Partial<
-  Omit<AgentOrchProjectState, "projectStem" | "lanes" | "runFences"> & {
+  Omit<AgentOrchProjectState, "projectStem" | "lanes" | "runFences" | "epochs"> & {
     lanes: Record<string, AgentOrchProjectLane>;
+    epochs: Record<string, AgentOrchProjectEpoch>;
     runFences: Record<string, { epochId: number; fencedAt: string; reason?: string }>;
   }
 >;

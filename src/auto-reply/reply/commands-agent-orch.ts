@@ -16,8 +16,10 @@ import {
   recordAgentOrchControlDedupeEntry,
   resolveAgentOrchExternalLatchState,
   setAgentOrchProjectHalted,
+  startAgentOrchEpochFromKickoff,
   unlatchAgentOrchProject,
 } from "../../agent-orch-v1/store.js";
+import { isAgentOrchOrchestratorLane } from "../../agent-orch-v1/topology.js";
 import { abortEmbeddedPiRun } from "../../agents/pi-embedded.js";
 import {
   getSubagentRunById,
@@ -25,8 +27,11 @@ import {
   markSubagentRunTerminated,
 } from "../../agents/subagent-registry.js";
 import { loadSessionStore, resolveStorePath } from "../../config/sessions.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import type { CommandHandler, CommandHandlerResult } from "./commands-types.js";
+
+const log = createSubsystemLogger("reply/commands-agent-orch");
 
 function stopWithText(text: string): CommandHandlerResult {
   return {
@@ -139,8 +144,56 @@ function appendControlEvent(params: {
   });
 }
 
+function maybeStartKickoffEpoch(params: {
+  cfg: Parameters<CommandHandler>[0]["cfg"];
+  command: Parameters<CommandHandler>[0]["command"];
+  resolvedInbound: NonNullable<ReturnType<typeof resolveAgentOrchProjectFromInbound>>;
+}): void {
+  const project = params.resolvedInbound.project;
+  if (!project) {
+    return;
+  }
+  if (!params.command.isAuthorizedSender) {
+    return;
+  }
+  if (params.resolvedInbound.context.identity.senderIsBot) {
+    return;
+  }
+  if (!isAgentOrchOrchestratorLane({ role: project.laneRole, instance: project.laneInstance })) {
+    return;
+  }
+  const kickoffMid = params.resolvedInbound.context.messageId?.trim();
+  if (!kickoffMid) {
+    return;
+  }
+  const started = startAgentOrchEpochFromKickoff({
+    cfg: params.cfg,
+    projectStem: project.projectStem,
+    kickoffMid,
+    streamName: project.streamName,
+    streamId: project.streamId,
+    topic: project.topic,
+    laneRole: project.laneRole,
+    laneInstance: project.laneInstance,
+  });
+  if (!started.started) {
+    log.info(
+      `epoch: kickoff ignored project=${project.projectStem} reason=halted mid=${kickoffMid}`,
+    );
+  }
+}
+
 export const handleAgentOrchCommand: CommandHandler = async (params) => {
+  const resolvedInbound = resolveAgentOrchProjectFromInbound(params.ctx, params.cfg);
   const resolved = resolveAgentOrchV1Config(params.cfg);
+  if (resolved.enabled && resolvedInbound) {
+    maybeStartKickoffEpoch({
+      cfg: params.cfg,
+      command: params.command,
+      resolvedInbound,
+    });
+  }
+
   const parsedCommand = parseAgentOrchControlCommand(params.command.commandBodyNormalized);
   if (parsedCommand.kind === "ignored") {
     return null;
@@ -148,7 +201,6 @@ export const handleAgentOrchCommand: CommandHandler = async (params) => {
   if (!resolved.enabled) {
     return stopWithText("Agent orchestration v1 is disabled (agentOrchV1.enabled=false).");
   }
-  const resolvedInbound = resolveAgentOrchProjectFromInbound(params.ctx, params.cfg);
   if (!resolvedInbound) {
     return stopWithText("`/oc` is currently supported only on Zulip.");
   }

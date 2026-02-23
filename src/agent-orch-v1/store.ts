@@ -2,10 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import type { OpenClawConfig } from "../config/config.js";
 import { loadJsonFile, saveJsonFile } from "../infra/json-file.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveAgentOrchV1Config } from "./config.js";
 import type {
   AgentOrchControlDedupeEntry,
   AgentOrchExternalLatchState,
+  AgentOrchProjectEpoch,
   AgentOrchProjectEvent,
   AgentOrchProjectLane,
   AgentOrchProjectOrigin,
@@ -19,6 +21,7 @@ type PersistedControlDedupe = {
 };
 
 const CONTROL_DEDUPE_VERSION = 1 as const;
+const log = createSubsystemLogger("agent-orch-v1/store");
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -54,7 +57,8 @@ function resolveControlDedupePath(cfg: OpenClawConfig): string {
 function buildDefaultProjectState(projectStem: string): AgentOrchProjectState {
   return {
     projectStem,
-    epochId: 1,
+    epochId: 0,
+    epochs: {},
     closedEpoch: null,
     halted: false,
     lanes: {},
@@ -70,15 +74,44 @@ function readProjectStateFromDisk(cfg: OpenClawConfig, projectStem: string): Age
     return buildDefaultProjectState(projectStem);
   }
   const typed = raw as Partial<AgentOrchProjectState>;
+  const parsedEpochs: Record<string, AgentOrchProjectEpoch> = {};
+  const epochsRaw =
+    typed.epochs && typeof typed.epochs === "object"
+      ? (typed.epochs as Record<string, unknown>)
+      : undefined;
+  if (epochsRaw) {
+    for (const [epochKey, value] of Object.entries(epochsRaw)) {
+      if (!value || typeof value !== "object") {
+        continue;
+      }
+      const kickoffMid =
+        typeof (value as { kickoffMid?: unknown }).kickoffMid === "string"
+          ? (value as { kickoffMid: string }).kickoffMid.trim()
+          : "";
+      const startedAtRaw =
+        typeof (value as { startedAt?: unknown }).startedAt === "string"
+          ? (value as { startedAt: string }).startedAt.trim()
+          : "";
+      if (!kickoffMid || !startedAtRaw) {
+        continue;
+      }
+      parsedEpochs[epochKey] = {
+        kickoffMid,
+        startedAt: startedAtRaw,
+      };
+    }
+  }
+
   return {
     projectStem,
     epochId:
       typeof typed.epochId === "number" && Number.isFinite(typed.epochId)
-        ? Math.max(1, Math.floor(typed.epochId))
-        : 1,
+        ? Math.max(0, Math.floor(typed.epochId))
+        : 0,
+    epochs: parsedEpochs,
     closedEpoch:
       typeof typed.closedEpoch === "number" && Number.isFinite(typed.closedEpoch)
-        ? Math.max(1, Math.floor(typed.closedEpoch))
+        ? Math.max(0, Math.floor(typed.closedEpoch))
         : null,
     halted: typed.halted === true,
     origin:
@@ -179,6 +212,7 @@ export function updateAgentOrchProjectState(params: {
   const next: AgentOrchProjectState = {
     ...current,
     ...params.patch,
+    epochs: params.patch.epochs ?? current.epochs,
     lanes: params.patch.lanes ?? current.lanes,
     runFences: params.patch.runFences ?? current.runFences,
     updatedAt: nowIso(),
@@ -319,6 +353,102 @@ export function unlatchAgentOrchProject(params: {
   };
   saveAgentOrchProjectState(params.cfg, params.projectStem, next);
   return next;
+}
+
+export function resolveAgentOrchActiveEpochKickoffMid(params: {
+  cfg: OpenClawConfig;
+  projectStem: string;
+}): { epochId: number; kickoffMid?: string; startedAt?: string } {
+  const state = loadAgentOrchProjectState(params.cfg, params.projectStem);
+  if (state.epochId < 1) {
+    return { epochId: state.epochId };
+  }
+  const active = state.epochs[String(state.epochId)];
+  return {
+    epochId: state.epochId,
+    kickoffMid: active?.kickoffMid,
+    startedAt: active?.startedAt,
+  };
+}
+
+export function startAgentOrchEpochFromKickoff(params: {
+  cfg: OpenClawConfig;
+  projectStem: string;
+  kickoffMid: string;
+  streamName?: string;
+  streamId?: string;
+  topic: string;
+  laneRole: string;
+  laneInstance: number;
+}): { started: boolean; state: AgentOrchProjectState } {
+  const kickoffMid = params.kickoffMid.trim();
+  if (!kickoffMid) {
+    return {
+      started: false,
+      state: loadAgentOrchProjectState(params.cfg, params.projectStem),
+    };
+  }
+  const current = loadAgentOrchProjectState(params.cfg, params.projectStem);
+  if (current.halted) {
+    log.info(`epoch: kickoff ignored for halted project=${params.projectStem} mid=${kickoffMid}`);
+    return {
+      started: false,
+      state: current,
+    };
+  }
+  const nextEpochId = Math.max(0, current.epochId) + 1;
+  const startedAt = nowIso();
+  const laneKey = `${params.streamId ?? params.streamName ?? "stream"}|${params.topic}`;
+  const next: AgentOrchProjectState = {
+    ...current,
+    epochId: nextEpochId,
+    closedEpoch: null,
+    epochs: {
+      ...current.epochs,
+      [String(nextEpochId)]: {
+        kickoffMid,
+        startedAt,
+      },
+    },
+    origin:
+      current.origin ??
+      ({
+        streamName: params.streamName,
+        streamId: params.streamId,
+        topic: params.topic,
+        capturedAt: startedAt,
+      } satisfies AgentOrchProjectOrigin),
+    lanes: {
+      ...current.lanes,
+      [laneKey]: {
+        streamName: params.streamName,
+        streamId: params.streamId,
+        topic: params.topic,
+        laneRole: params.laneRole,
+        laneInstance: params.laneInstance,
+        lastActivityAt: startedAt,
+      },
+    },
+    updatedAt: startedAt,
+  };
+  saveAgentOrchProjectState(params.cfg, params.projectStem, next);
+  appendAgentOrchProjectEvent(params.cfg, params.projectStem, {
+    at: startedAt,
+    type: "epoch.started",
+    data: {
+      epochId: nextEpochId,
+      kickoffMid,
+      topic: params.topic,
+      streamName: params.streamName,
+      streamId: params.streamId,
+      laneRole: params.laneRole,
+      laneInstance: params.laneInstance,
+    },
+  });
+  log.info(
+    `epoch: started project=${params.projectStem} epoch=${nextEpochId} kickoffMid=${kickoffMid}`,
+  );
+  return { started: true, state: next };
 }
 
 export function markAgentOrchRunFence(params: {

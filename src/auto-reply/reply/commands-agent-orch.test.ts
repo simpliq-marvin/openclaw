@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { withTempHome } from "../../../test/helpers/temp-home.js";
-import { loadAgentOrchProjectState } from "../../agent-orch-v1/store.js";
+import { loadAgentOrchProjectState, setAgentOrchProjectHalted } from "../../agent-orch-v1/store.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { handleAgentOrchCommand } from "./commands-agent-orch.js";
 import { buildCommandTestParams } from "./commands.test-harness.js";
@@ -16,6 +16,18 @@ function buildConfig(): OpenClawConfig {
         unlatchAllowlistEmails: ["ian@simpliq.io"],
         resumeAllowlistEmails: ["ian@simpliq.io"],
         killAllowlistEmails: ["ian@simpliq.io"],
+      },
+      topology: {
+        kind: "flat",
+        roles: {
+          orchestrator: {
+            instances: {
+              "1": {
+                zulipStream: "01-flat-team-orchestrator",
+              },
+            },
+          },
+        },
       },
     },
   };
@@ -83,6 +95,55 @@ describe("/oc command handler", () => {
       });
       const result = await handleAgentOrchCommand(params, true);
       expect(result?.reply?.text).toContain("Unauthorized /oc resume");
+    });
+  });
+
+  it("starts a new epoch on authorized human message in orchestrator lane", async () => {
+    await withTempHome(async () => {
+      const cfg = buildConfig();
+      const result = await handleAgentOrchCommand(
+        buildCommandTestParams("kickoff now", cfg, {
+          Provider: "zulip",
+          Surface: "zulip",
+          OriginatingChannel: "zulip",
+          GroupChannel: "01-flat-team-orchestrator",
+          MessageThreadId: "project-foo",
+          SenderUsername: "ian@simpliq.io",
+          MessageSid: "mid-kickoff",
+        }),
+        true,
+      );
+      expect(result).toBeNull();
+      const state = loadAgentOrchProjectState(cfg, "project-foo");
+      expect(state.epochId).toBe(1);
+      expect(state.epochs["1"]?.kickoffMid).toBe("mid-kickoff");
+    });
+  });
+
+  it("does not auto-start epoch from kickoff when project is HALTED", async () => {
+    await withTempHome(async () => {
+      const cfg = buildConfig();
+      setAgentOrchProjectHalted({
+        cfg,
+        projectStem: "project-foo",
+        halted: true,
+      });
+      const result = await handleAgentOrchCommand(
+        buildCommandTestParams("kickoff now", cfg, {
+          Provider: "zulip",
+          Surface: "zulip",
+          OriginatingChannel: "zulip",
+          GroupChannel: "01-flat-team-orchestrator",
+          MessageThreadId: "project-foo",
+          SenderUsername: "ian@simpliq.io",
+          MessageSid: "mid-kickoff-halted",
+        }),
+        true,
+      );
+      expect(result).toBeNull();
+      const state = loadAgentOrchProjectState(cfg, "project-foo");
+      expect(state.epochId).toBe(0);
+      expect(state.epochs["1"]).toBeUndefined();
     });
   });
 });
