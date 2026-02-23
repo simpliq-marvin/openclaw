@@ -46,6 +46,21 @@ export type AgentOrchV1RoutingConfig = {
   zulip?: AgentOrchV1ZulipRoutingConfig;
 };
 
+export type AgentOrchV1TopologyFlatLaneConfig = {
+  /** Zulip stream for this lane instance. */
+  zulipStream?: string;
+};
+
+export type AgentOrchV1TopologyFlatRoleConfig = {
+  /** Instance map where keys are numeric strings >= 1. */
+  instances?: Record<string, AgentOrchV1TopologyFlatLaneConfig>;
+};
+
+export type AgentOrchV1TopologyConfig = {
+  kind?: "flat";
+  roles?: Record<string, AgentOrchV1TopologyFlatRoleConfig>;
+};
+
 export type AgentOrchV1Config = {
   enabled?: boolean;
   stateDir?: string;
@@ -55,4 +70,5 @@ export type AgentOrchV1Config = {
   taxonomy?: AgentOrchV1TaxonomyConfig;
   dedupe?: AgentOrchV1DedupeConfig;
   routing?: AgentOrchV1RoutingConfig;
+  topology?: AgentOrchV1TopologyConfig;
 };

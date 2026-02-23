@@ -31,6 +31,12 @@ const baseConfig: ResolvedAgentOrchV1Config = {
       roleInstanceMap: new Map(),
     },
   },
+  topology: {
+    kind: "flat",
+    roleInstanceMap: new Map(),
+    streamRoleInstanceMap: new Map(),
+    source: "none",
+  },
 };
 
 describe("agent-orch-v1 authority", () => {

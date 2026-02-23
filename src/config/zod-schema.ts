@@ -162,6 +162,26 @@ const AgentOrchV1RoutingSchema = z
   .strict()
   .optional();
 
+const AgentOrchV1TopologyFlatLaneSchema = z
+  .object({
+    zulipStream: z.string().optional(),
+  })
+  .strict();
+
+const AgentOrchV1TopologyFlatRoleSchema = z
+  .object({
+    instances: z.record(z.string(), AgentOrchV1TopologyFlatLaneSchema).optional(),
+  })
+  .strict();
+
+const AgentOrchV1TopologySchema = z
+  .object({
+    kind: z.literal("flat").optional(),
+    roles: z.record(z.string(), AgentOrchV1TopologyFlatRoleSchema).optional(),
+  })
+  .strict()
+  .optional();
+
 const AgentOrchV1Schema = z
   .object({
     enabled: z.boolean().optional(),
@@ -172,6 +192,7 @@ const AgentOrchV1Schema = z
     taxonomy: AgentOrchV1TaxonomySchema,
     dedupe: AgentOrchV1DedupeSchema,
     routing: AgentOrchV1RoutingSchema,
+    topology: AgentOrchV1TopologySchema,
   })
   .strict()
   .optional();

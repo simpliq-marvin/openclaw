@@ -1,6 +1,6 @@
 import type { OpenClawConfig } from "../config/config.js";
-import { resolveAgentOrchV1Config } from "./config.js";
 import type { RouteEnvelope } from "./route-envelope.js";
+import { resolveAgentOrchLaneByRoleInstance } from "./topology.js";
 
 export type ZulipRoutingResolveResult =
   | { ok: true; stream: string }
@@ -10,16 +10,13 @@ export function resolveZulipRoutingDestination(params: {
   cfg: OpenClawConfig;
   envelope: RouteEnvelope;
 }): ZulipRoutingResolveResult {
-  const resolved = resolveAgentOrchV1Config(params.cfg);
-  const role = params.envelope.role.trim().toLowerCase();
-  if (!role) {
+  const lane = resolveAgentOrchLaneByRoleInstance({
+    cfg: params.cfg,
+    role: params.envelope.role,
+    instance: params.envelope.instance,
+  });
+  if (!lane?.zulipStream) {
     return { ok: false, reason: "unmapped-role-instance" };
   }
-  const exactKey = `${role}#${params.envelope.instance}`;
-  const map = resolved.routing.zulip.roleInstanceMap;
-  const stream = map.get(exactKey) ?? map.get(role);
-  if (!stream) {
-    return { ok: false, reason: "unmapped-role-instance" };
-  }
-  return { ok: true, stream };
+  return { ok: true, stream: lane.zulipStream };
 }
