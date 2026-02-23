@@ -87,8 +87,20 @@ const zulipPlugin = {
   messaging: {
     normalizeTarget: (raw: string) => raw.trim(),
     targetResolver: {
-      looksLikeId: (raw: string) =>
-        /^(?:zulip:)?(?:stream|channel|user):/i.test(raw.trim()) || raw.trim().startsWith("#"),
+      looksLikeId: (raw: string) => {
+        const value = raw.trim();
+        if (!value) {
+          return false;
+        }
+        if (/^(?:zulip:)?(?:stream|channel|user):/i.test(value) || value.startsWith("#")) {
+          return true;
+        }
+        // Mirror Zulip's common usage: bare stream names are treated as valid stream targets.
+        if (!value.includes("@") && /^[a-z0-9][a-z0-9._-]{1,80}$/i.test(value)) {
+          return true;
+        }
+        return false;
+      },
       hint: "Use zulip:stream:<stream> for stream targets.",
     },
   },
@@ -368,6 +380,22 @@ describe("runMessageAction threading auto-injection", () => {
     });
   });
 
+  it("aliases Zulip topic param to threadId", async () => {
+    mockHandledSendAction();
+
+    const { call } = await runThreadingAction({
+      cfg: zulipConfig,
+      actionParams: {
+        channel: "zulip",
+        target: "02-flat-team-strategist",
+        topic: "ft-project-001",
+        message: "hello",
+      },
+    });
+
+    expect(call?.threadId).toBe("ft-project-001");
+  });
+
   it("autofills missing Zulip topic from inbound origin context", async () => {
     mockHandledSendAction();
 
@@ -446,5 +474,25 @@ describe("runMessageAction threading auto-injection", () => {
     });
 
     expect(call?.threadId).toBe("inbound-topic");
+  });
+
+  it("autofills missing Zulip topic for bare stream name targets", async () => {
+    mockHandledSendAction();
+
+    const { call } = await runThreadingAction({
+      cfg: zulipConfig,
+      actionParams: {
+        channel: "zulip",
+        target: "02-flat-team-strategist",
+        message: "hello",
+      },
+      toolContext: {
+        currentChannelProvider: "zulip",
+        currentChannelId: "zulip:stream:origin-stream",
+        currentThreadTs: "origin-topic",
+      },
+    });
+
+    expect(call?.threadId).toBe("origin-topic");
   });
 });

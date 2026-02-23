@@ -145,7 +145,22 @@ function parseZulipStream(raw: unknown): string | undefined {
 }
 
 function hasZulipTopicInTarget(target: string): boolean {
-  return /:topic:/i.test(target);
+  const value = target.trim();
+  if (!value) {
+    return false;
+  }
+  // Canonical form.
+  if (/:topic:/i.test(value)) {
+    return true;
+  }
+  // Human-friendly form: #stream:topic
+  if (value.startsWith("#")) {
+    const idx = value.indexOf(":");
+    if (idx > 0 && idx < value.length - 1) {
+      return value.slice(idx + 1).trim().length > 0;
+    }
+  }
+  return false;
 }
 
 function isLikelyZulipStreamTarget(target: unknown): target is string {
@@ -153,7 +168,18 @@ function isLikelyZulipStreamTarget(target: unknown): target is string {
   if (!value) {
     return false;
   }
-  return /^zulip:(?:stream|channel):/i.test(value) || /^(?:stream|channel):/i.test(value);
+  if (/^zulip:(?:stream|channel):/i.test(value) || /^(?:stream|channel):/i.test(value)) {
+    return true;
+  }
+  // Zulip users are usually addressed via email; avoid treating DMs as streams.
+  if (/^zulip:user:/i.test(value) || /^user:/i.test(value)) {
+    return false;
+  }
+  if (value.includes("@")) {
+    return false;
+  }
+  // Treat bare stream names as streams (common in agent-to-agent routing).
+  return true;
 }
 
 function resolveInboundZulipOriginContext(
@@ -252,6 +278,26 @@ function buildRoutingErrorResult(params: {
     payload: params.payload,
     dryRun: params.dryRun,
   };
+}
+
+function maybeAliasZulipTopicParams(params: {
+  action: ChannelMessageActionName;
+  channel: ChannelId;
+  args: Record<string, unknown>;
+}): void {
+  if (params.action !== "send" || params.channel !== "zulip") {
+    return;
+  }
+  if (toNonEmptyString(params.args.threadId)) {
+    return;
+  }
+  const topic = toNonEmptyString(params.args.topic) ?? toNonEmptyString(params.args.threadName);
+  if (!topic) {
+    return;
+  }
+  // Backwards-compat for callers that still use `topic`/`threadName` instead of `threadId`.
+  params.args.threadId = topic;
+  log.info(`routing: aliased topic param to threadId topic=${topic}`);
 }
 
 function maybeApplyRouteEnvelope(params: {
@@ -1012,6 +1058,7 @@ export async function runMessageAction(
   }
 
   const channel = await resolveChannel(cfg, params);
+  maybeAliasZulipTopicParams({ action, channel, args: params });
   maybeApplyZulipTopicGuardrail({
     input,
     action,
