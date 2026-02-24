@@ -133,6 +133,21 @@ const AgentOrchV1LivenessSchema = z
   .strict()
   .optional();
 
+const AgentOrchV1ControlSchema = z
+  .object({
+    zulipStream: z.string().optional(),
+  })
+  .strict()
+  .optional();
+
+const AgentOrchV1SubagentsSchema = z
+  .object({
+    pollIntervalMs: z.number().int().positive().optional(),
+    resultTimeoutMs: z.number().int().positive().optional(),
+  })
+  .strict()
+  .optional();
+
 const AgentOrchV1TaxonomySchema = z
   .object({
     projectStemRegex: z.string().optional(),
@@ -187,8 +202,10 @@ const AgentOrchV1Schema = z
     enabled: z.boolean().optional(),
     stateDir: z.string().optional(),
     controlStream: z.string().optional(),
+    control: AgentOrchV1ControlSchema,
     authority: AgentOrchV1AuthoritySchema,
     liveness: AgentOrchV1LivenessSchema,
+    subagents: AgentOrchV1SubagentsSchema,
     taxonomy: AgentOrchV1TaxonomySchema,
     dedupe: AgentOrchV1DedupeSchema,
     routing: AgentOrchV1RoutingSchema,

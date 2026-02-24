@@ -5,6 +5,9 @@ import type { ResolvedAgentOrchV1Config } from "./config.js";
 const baseConfig: ResolvedAgentOrchV1Config = {
   enabled: true,
   stateDir: "/tmp/state",
+  control: {
+    zulipStream: "00-control",
+  },
   controlStream: "00-control",
   projectStemRegex: /^[a-z0-9-]+$/,
   projectStemRegexSource: "^[a-z0-9-]+$",
@@ -21,6 +24,10 @@ const baseConfig: ResolvedAgentOrchV1Config = {
   liveness: {
     heartbeatSeconds: 300,
     emitStillRunning: true,
+  },
+  subagents: {
+    pollIntervalMs: 30_000,
+    resultTimeoutMs: 20 * 60_000,
   },
   dedupe: {
     ttlSeconds: 3600,

@@ -204,10 +204,11 @@ export const handleAgentOrchCommand: CommandHandler = async (params) => {
   if (!resolvedInbound) {
     return stopWithText("`/oc` is currently supported only on Zulip.");
   }
-  const inControlStream = resolvedInbound.context.streamName?.trim() === resolved.controlStream;
+  const inControlStream =
+    resolvedInbound.context.streamName?.trim() === resolved.control.zulipStream;
   if (!inControlStream) {
     return stopWithText(
-      `\`/oc\` commands are only accepted in stream "${resolved.controlStream}".`,
+      `\`/oc\` commands are only accepted in stream "${resolved.control.zulipStream}".`,
     );
   }
   if (parsedCommand.kind === "invalid") {

@@ -22,6 +22,18 @@ export type AgentOrchV1LivenessConfig = {
   emitStillRunning?: boolean;
 };
 
+export type AgentOrchV1ControlConfig = {
+  /** Control stream name for Zulip control-plane commands. */
+  zulipStream?: string;
+};
+
+export type AgentOrchV1SubagentsConfig = {
+  /** Poll interval for result artifact checks after child run terminal. */
+  pollIntervalMs?: number;
+  /** Maximum wait before treating missing/invalid result artifact as terminal failure. */
+  resultTimeoutMs?: number;
+};
+
 export type AgentOrchV1TaxonomyConfig = {
   projectStemRegex?: string;
 };
@@ -64,9 +76,12 @@ export type AgentOrchV1TopologyConfig = {
 export type AgentOrchV1Config = {
   enabled?: boolean;
   stateDir?: string;
+  /** Legacy: use control.zulipStream. */
   controlStream?: string;
+  control?: AgentOrchV1ControlConfig;
   authority?: AgentOrchV1AuthorityConfig;
   liveness?: AgentOrchV1LivenessConfig;
+  subagents?: AgentOrchV1SubagentsConfig;
   taxonomy?: AgentOrchV1TaxonomyConfig;
   dedupe?: AgentOrchV1DedupeConfig;
   routing?: AgentOrchV1RoutingConfig;

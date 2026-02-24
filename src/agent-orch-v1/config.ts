@@ -9,10 +9,13 @@ export const DEFAULT_AGENT_ORCH_V1_PROJECT_STEM_REGEX = "^[a-z0-9-]+$";
 export const DEFAULT_AGENT_ORCH_V1_HEARTBEAT_SECONDS = 300;
 export const DEFAULT_AGENT_ORCH_V1_DEDUPE_TTL_SECONDS = 14 * 24 * 60 * 60;
 export const DEFAULT_AGENT_ORCH_V1_DEDUPE_MAX_ENTRIES = 4096;
+export const DEFAULT_AGENT_ORCH_V1_SUBAGENT_POLL_INTERVAL_MS = 30_000;
+export const DEFAULT_AGENT_ORCH_V1_SUBAGENT_RESULT_TIMEOUT_MS = 20 * 60_000;
 export const DEFAULT_AGENT_ORCH_V1_TOPOLOGY_KIND = "flat";
 const DEFAULT_IAN_EMAIL = "ian@simpliq.io";
 const log = createSubsystemLogger("agent-orch-v1/config");
 let didWarnTopologyPrecedence = false;
+let didWarnControlStreamPrecedence = false;
 
 type AgentOrchRoleInstanceBinding = {
   role: string;
@@ -22,6 +25,10 @@ type AgentOrchRoleInstanceBinding = {
 export type ResolvedAgentOrchV1Config = {
   enabled: boolean;
   stateDir: string;
+  control: {
+    zulipStream: string;
+  };
+  /** Backward-compatible alias for control.zulipStream. */
   controlStream: string;
   projectStemRegex: RegExp;
   projectStemRegexSource: string;
@@ -38,6 +45,10 @@ export type ResolvedAgentOrchV1Config = {
   liveness: {
     heartbeatSeconds: number;
     emitStillRunning: boolean;
+  };
+  subagents: {
+    pollIntervalMs: number;
+    resultTimeoutMs: number;
   };
   dedupe: {
     ttlSeconds: number;
@@ -231,7 +242,19 @@ export function resolveAgentOrchV1Config(cfg: OpenClawConfig): ResolvedAgentOrch
   const stateDir = raw.stateDir?.trim()
     ? path.resolve(raw.stateDir)
     : path.join(resolveStateDir(process.env), "state", "agent-orch-v1");
-  const controlStream = raw.controlStream?.trim() || DEFAULT_AGENT_ORCH_V1_CONTROL_STREAM;
+  const controlStreamFromControl = raw.control?.zulipStream?.trim();
+  const controlStreamFromLegacy = raw.controlStream?.trim();
+  if (
+    !didWarnControlStreamPrecedence &&
+    controlStreamFromControl &&
+    controlStreamFromLegacy &&
+    controlStreamFromControl !== controlStreamFromLegacy
+  ) {
+    didWarnControlStreamPrecedence = true;
+    log.warn("latch: control.zulipStream is set; ignoring legacy controlStream");
+  }
+  const controlStream =
+    controlStreamFromControl || controlStreamFromLegacy || DEFAULT_AGENT_ORCH_V1_CONTROL_STREAM;
   const { regex: projectStemRegex, source: projectStemRegexSource } = resolveProjectStemRegex(
     raw.taxonomy?.projectStemRegex,
   );
@@ -257,6 +280,9 @@ export function resolveAgentOrchV1Config(cfg: OpenClawConfig): ResolvedAgentOrch
   return {
     enabled: raw.enabled === true,
     stateDir,
+    control: {
+      zulipStream: controlStream,
+    },
     controlStream,
     projectStemRegex,
     projectStemRegexSource,
@@ -280,6 +306,16 @@ export function resolveAgentOrchV1Config(cfg: OpenClawConfig): ResolvedAgentOrch
         DEFAULT_AGENT_ORCH_V1_HEARTBEAT_SECONDS,
       ),
       emitStillRunning: raw.liveness?.emitStillRunning !== false,
+    },
+    subagents: {
+      pollIntervalMs: coercePositiveInt(
+        raw.subagents?.pollIntervalMs,
+        DEFAULT_AGENT_ORCH_V1_SUBAGENT_POLL_INTERVAL_MS,
+      ),
+      resultTimeoutMs: coercePositiveInt(
+        raw.subagents?.resultTimeoutMs,
+        DEFAULT_AGENT_ORCH_V1_SUBAGENT_RESULT_TIMEOUT_MS,
+      ),
     },
     dedupe: {
       ttlSeconds: coercePositiveInt(

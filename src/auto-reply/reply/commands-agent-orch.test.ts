@@ -9,7 +9,9 @@ function buildConfig(): OpenClawConfig {
   return {
     agentOrchV1: {
       enabled: true,
-      controlStream: "00-control",
+      control: {
+        zulipStream: "00-control",
+      },
       authority: {
         ianEmails: ["ian@simpliq.io"],
         closeAllowlistEmails: ["ian@simpliq.io"],
