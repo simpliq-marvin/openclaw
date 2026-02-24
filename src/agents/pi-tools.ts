@@ -199,6 +199,8 @@ export function createOpenClawCodingTools(options?: {
   groupSpace?: string | null;
   /** Parent session key for subagent group policy inheritance. */
   spawnedBy?: string | null;
+  /** Parent run id for spawned child association in result artifacts. */
+  runId?: string;
   senderId?: string | null;
   senderName?: string | null;
   senderUsername?: string | null;
@@ -455,6 +457,7 @@ export function createOpenClawCodingTools(options?: {
       requireExplicitMessageTarget: options?.requireExplicitMessageTarget,
       disableMessageTool: options?.disableMessageTool,
       requesterAgentIdOverride: agentId,
+      parentRunId: options?.runId,
       requesterSenderId: options?.senderId,
       senderIsOwner: options?.senderIsOwner,
     }),

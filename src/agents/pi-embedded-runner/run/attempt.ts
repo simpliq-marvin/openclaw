@@ -307,6 +307,7 @@ export async function runEmbeddedAttempt(
           groupChannel: params.groupChannel,
           groupSpace: params.groupSpace,
           spawnedBy: params.spawnedBy,
+          runId: params.runId,
           senderId: params.senderId,
           senderName: params.senderName,
           senderUsername: params.senderUsername,

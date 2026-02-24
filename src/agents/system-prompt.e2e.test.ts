@@ -570,6 +570,11 @@ describe("buildSubagentSystemPrompt", () => {
     const prompt = buildSubagentSystemPrompt({
       childSessionKey: "agent:main:subagent:abc",
       task: "research task",
+      project: "project-foo",
+      epochId: 2,
+      runId: "run-child-1",
+      parentRunId: "run-parent-1",
+      resultPath: "/tmp/openclaw-state/projects/project-foo/runs/run-child-1/result.json",
       childDepth: 1,
       maxSpawnDepth: 2,
     });
@@ -586,6 +591,13 @@ describe("buildSubagentSystemPrompt", () => {
     expect(prompt).toContain("[truncated: output exceeded context limit]");
     expect(prompt).toContain("offset/limit");
     expect(prompt).toContain("instead of full-file `cat`");
+    expect(prompt).toContain("## Result Contract");
+    expect(prompt).toContain(
+      "status, finishedAt, summary, outputs, project, epochId, runId, parentRunId",
+    );
+    expect(prompt).toContain(
+      "Result path: /tmp/openclaw-state/projects/project-foo/runs/run-child-1/result.json",
+    );
   });
 
   it("renders depth-2 leaf guidance with parent orchestrator labels", () => {

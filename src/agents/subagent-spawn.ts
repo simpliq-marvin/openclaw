@@ -48,6 +48,7 @@ export type SpawnSubagentContext = {
   agentGroupId?: string | null;
   agentGroupChannel?: string | null;
   agentGroupSpace?: string | null;
+  parentRunId?: string | null;
   requesterAgentIdOverride?: string;
 };
 
@@ -375,6 +376,27 @@ export async function spawnSubagentDirect(
     }
     threadBindingReady = true;
   }
+  const resolvedProject = requesterOrigin?.channel
+    ? resolveAgentOrchProjectFromOutbound({
+        cfg,
+        channel: requesterOrigin.channel,
+        to: requesterOrigin.to ?? "",
+        threadId: requesterOrigin.threadId ?? null,
+      })
+    : null;
+  const projectStem = resolvedProject?.project?.projectStem;
+  const epochId = projectStem ? loadAgentOrchProjectState(cfg, projectStem).epochId : undefined;
+
+  const childIdem = crypto.randomUUID();
+  let childRunId: string = childIdem;
+  const parentRunId = ctx.parentRunId?.trim();
+  let resultPath = projectStem
+    ? resolveAgentOrchRunResultPath({
+        cfg,
+        projectStem,
+        runId: childRunId,
+      })
+    : undefined;
   const childSystemPrompt = buildSubagentSystemPrompt({
     requesterSessionKey,
     requesterOrigin,
@@ -383,19 +405,31 @@ export async function spawnSubagentDirect(
     task,
     childDepth,
     maxSpawnDepth,
+    project: projectStem,
+    epochId,
+    runId: childRunId,
+    parentRunId,
+    resultPath,
   });
   const childTaskMessage = [
     `[Subagent Context] You are running as a subagent (depth ${childDepth}/${maxSpawnDepth}). Results auto-announce to your requester; do not busy-poll for status.`,
     spawnMode === "session"
       ? "[Subagent Context] This subagent session is persistent and remains available for thread follow-up messages."
       : undefined,
+    resultPath
+      ? [
+          "[Subagent Contract] Write completion JSON to the exact path below before finishing:",
+          `resultPath=${resultPath}`,
+          `runId=${childRunId}`,
+          `parentRunId=${parentRunId || "unknown-parent-run"}`,
+          `parentSessionKey=${requesterInternalKey}`,
+        ].join("\n")
+      : undefined,
     `[Subagent Task]: ${task}`,
   ]
     .filter((line): line is string => Boolean(line))
     .join("\n\n");
 
-  const childIdem = crypto.randomUUID();
-  let childRunId: string = childIdem;
   try {
     const response = await callGateway<{ runId: string }>({
       method: "agent",
@@ -422,6 +456,13 @@ export async function spawnSubagentDirect(
     });
     if (typeof response?.runId === "string" && response.runId) {
       childRunId = response.runId;
+      if (projectStem) {
+        resultPath = resolveAgentOrchRunResultPath({
+          cfg,
+          projectStem,
+          runId: childRunId,
+        });
+      }
     }
   } catch (err) {
     if (threadBindingReady) {
@@ -476,27 +517,11 @@ export async function spawnSubagentDirect(
     };
   }
 
-  const resolvedProject = requesterOrigin?.channel
-    ? resolveAgentOrchProjectFromOutbound({
-        cfg,
-        channel: requesterOrigin.channel,
-        to: requesterOrigin.to ?? "",
-        threadId: requesterOrigin.threadId ?? null,
-      })
-    : null;
-  const projectStem = resolvedProject?.project?.projectStem;
-  const epochId = projectStem ? loadAgentOrchProjectState(cfg, projectStem).epochId : undefined;
-  const resultPath = projectStem
-    ? resolveAgentOrchRunResultPath({
-        cfg,
-        projectStem,
-        runId: childRunId,
-      })
-    : undefined;
   const shortId = buildAgentOrchShortId(childRunId);
 
   registerSubagentRun({
     runId: childRunId,
+    parentRunId: parentRunId || undefined,
     childSessionKey,
     requesterSessionKey: requesterInternalKey,
     requesterOrigin,
@@ -504,6 +529,7 @@ export async function spawnSubagentDirect(
     projectStem,
     epochId,
     resultPath,
+    required: true,
     task,
     cleanup,
     label: label || undefined,

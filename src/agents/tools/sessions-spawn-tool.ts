@@ -28,6 +28,7 @@ export function createSessionsSpawnTool(opts?: {
   agentGroupId?: string | null;
   agentGroupChannel?: string | null;
   agentGroupSpace?: string | null;
+  parentRunId?: string;
   sandboxed?: boolean;
   /** Explicit agent ID override for cron/hook sessions where session key parsing may not work. */
   requesterAgentIdOverride?: string;
@@ -83,6 +84,7 @@ export function createSessionsSpawnTool(opts?: {
           agentGroupId: opts?.agentGroupId,
           agentGroupChannel: opts?.agentGroupChannel,
           agentGroupSpace: opts?.agentGroupSpace,
+          parentRunId: opts?.parentRunId,
           requesterAgentIdOverride: opts?.requesterAgentIdOverride,
         },
       );

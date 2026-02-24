@@ -798,6 +798,11 @@ export function buildSubagentSystemPrompt(params: {
   childSessionKey: string;
   label?: string;
   task?: string;
+  project?: string;
+  epochId?: number;
+  runId?: string;
+  parentRunId?: string;
+  resultPath?: string;
   /** Depth of the child being spawned (1 = sub-agent, 2 = sub-sub-agent). */
   childDepth?: number;
   /** Config value: max allowed spawn depth. */
@@ -868,6 +873,13 @@ export function buildSubagentSystemPrompt(params: {
   }
 
   lines.push(
+    "## Result Contract",
+    "Before finishing, write a JSON artifact to the exact `resultPath` provided by the parent.",
+    "Required JSON fields: status, finishedAt, summary, outputs, project, epochId, runId, parentRunId.",
+    "status must be one of: done | blocked | failed.",
+    "When status=blocked include `blocker` (string or object).",
+    "When status=failed include optional structured `error` object.",
+    "",
     "## Session Context",
     ...[
       params.label ? `- Label: ${params.label}` : undefined,
@@ -877,6 +889,11 @@ export function buildSubagentSystemPrompt(params: {
       params.requesterOrigin?.channel
         ? `- Requester channel: ${params.requesterOrigin.channel}.`
         : undefined,
+      params.project ? `- Project: ${params.project}.` : undefined,
+      typeof params.epochId === "number" ? `- Epoch: ${params.epochId}.` : undefined,
+      params.runId ? `- Run ID: ${params.runId}.` : undefined,
+      params.parentRunId ? `- Parent run ID: ${params.parentRunId}.` : undefined,
+      params.resultPath ? `- Result path: ${params.resultPath}.` : undefined,
       `- Your session: ${params.childSessionKey}.`,
     ].filter((line): line is string => line !== undefined),
     "",
