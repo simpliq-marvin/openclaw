@@ -41,6 +41,7 @@ import {
   restoreSubagentRunsFromDisk,
 } from "./subagent-registry-state.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import { type SubagentResultPayload, waitForSubagentResultArtifact } from "./subagent-result.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
 
 export type { SubagentRunRecord } from "./subagent-registry.types.js";
@@ -94,6 +95,7 @@ function isAgentOrchEnabled(): boolean {
 
 const resumedRuns = new Set<string>();
 const endedHookInFlightRunIds = new Set<string>();
+const completionInFlightRunIds = new Set<string>();
 
 function suppressAnnounceForSteerRestart(entry?: SubagentRunRecord) {
   return entry?.suppressAnnounceReason === "steer-restart";
@@ -351,6 +353,64 @@ function resolveSubagentWaitTimeoutMs(
   return resolveAgentTimeoutMs({ cfg, overrideSeconds: runTimeoutSeconds ?? 0 });
 }
 
+function mapResultArtifactToSubagentOutcome(result: SubagentResultPayload): SubagentRunOutcome {
+  if (result.status === "done") {
+    return { status: "ok" };
+  }
+  if (result.status === "blocked") {
+    const blocker =
+      typeof result.blocker === "string" && result.blocker.trim()
+        ? result.blocker.trim()
+        : "blocked";
+    return { status: "error", error: `blocked: ${blocker}` };
+  }
+  const errorMessage =
+    typeof result.error?.message === "string" && result.error.message.trim()
+      ? result.error.message.trim()
+      : "failed";
+  return { status: "error", error: errorMessage };
+}
+
+async function resolveSubagentOutcomeWithResultGate(params: {
+  entry: SubagentRunRecord;
+  fallbackOutcome: SubagentRunOutcome;
+  cfg: ReturnType<typeof loadConfig>;
+}): Promise<SubagentRunOutcome> {
+  const resultPath = params.entry.resultPath?.trim();
+  if (!resultPath || params.entry.required === false) {
+    return params.fallbackOutcome;
+  }
+
+  const resolvedOrch = resolveAgentOrchV1Config(params.cfg);
+  const expectedEpochId =
+    typeof params.entry.epochId === "number" && Number.isFinite(params.entry.epochId)
+      ? Math.max(0, Math.floor(params.entry.epochId))
+      : undefined;
+  const expectedParentRunId = params.entry.parentRunId?.trim();
+  const result = await waitForSubagentResultArtifact({
+    resultPath,
+    expected: {
+      projectStem: params.entry.projectStem,
+      epochId: expectedEpochId,
+      runId: params.entry.runId,
+      parentRunId: expectedParentRunId,
+    },
+    timeoutMs: resolvedOrch.subagents.resultTimeoutMs,
+    pollIntervalMs: resolvedOrch.subagents.pollIntervalMs,
+  });
+  if (!result.ok) {
+    defaultRuntime.log(
+      `[warn] Subagent result gate timed out run=${params.entry.runId} resultPath=${resultPath} reason=${result.reason}`,
+    );
+    return {
+      status: "error",
+      error: "missing_result_json",
+    };
+  }
+
+  return mapResultArtifactToSubagentOutcome(result.result);
+}
+
 function startSweeper() {
   if (sweeper) {
     return;
@@ -400,6 +460,72 @@ async function sweepSubagentRuns() {
   }
 }
 
+async function completeSubagentRunFromTerminalSignal(params: {
+  runId: string;
+  startedAt?: number;
+  endedAt?: number;
+  outcome: SubagentRunOutcome;
+}) {
+  const runId = params.runId.trim();
+  if (!runId) {
+    return;
+  }
+  if (completionInFlightRunIds.has(runId)) {
+    return;
+  }
+  completionInFlightRunIds.add(runId);
+  try {
+    const entry = subagentRuns.get(runId);
+    if (!entry) {
+      return;
+    }
+    if (entry.state === "terminal" && entry.cleanupCompletedAt) {
+      return;
+    }
+
+    let mutated = false;
+    if (typeof params.startedAt === "number" && params.startedAt > 0) {
+      if (entry.startedAt !== params.startedAt) {
+        entry.startedAt = params.startedAt;
+        mutated = true;
+      }
+    }
+    if (typeof params.endedAt === "number" && params.endedAt > 0) {
+      if (entry.endedAt !== params.endedAt) {
+        entry.endedAt = params.endedAt;
+        mutated = true;
+      }
+    }
+    if (!entry.endedAt) {
+      entry.endedAt = Date.now();
+      mutated = true;
+    }
+    if (mutated) {
+      persistSubagentRuns();
+    }
+
+    const cfg = loadConfig();
+    const outcome = await resolveSubagentOutcomeWithResultGate({
+      entry,
+      fallbackOutcome: params.outcome,
+      cfg,
+    });
+    const reason =
+      outcome.status === "error" ? SUBAGENT_ENDED_REASON_ERROR : SUBAGENT_ENDED_REASON_COMPLETE;
+    await completeSubagentRun({
+      runId,
+      endedAt: entry.endedAt,
+      outcome,
+      reason,
+      sendFarewell: true,
+      accountId: entry.requesterOrigin?.accountId,
+      triggerCleanup: true,
+    });
+  } finally {
+    completionInFlightRunIds.delete(runId);
+  }
+}
+
 function ensureListener() {
   if (listenerStarted) {
     return;
@@ -434,14 +560,14 @@ function ensureListener() {
           : evt.data?.aborted
             ? { status: "timeout" }
             : { status: "ok" };
-      await completeSubagentRun({
+      await completeSubagentRunFromTerminalSignal({
         runId: evt.runId,
+        startedAt:
+          typeof evt.data?.startedAt === "number" && evt.data.startedAt > 0
+            ? evt.data.startedAt
+            : undefined,
         endedAt,
         outcome,
-        reason: phase === "error" ? SUBAGENT_ENDED_REASON_ERROR : SUBAGENT_ENDED_REASON_COMPLETE,
-        sendFarewell: true,
-        accountId: entry.requesterOrigin?.accountId,
-        triggerCleanup: true,
       });
     })();
   });
@@ -675,6 +801,7 @@ export function replaceSubagentRunAfterSteer(params: {
   const next: SubagentRunRecord = {
     ...source,
     runId: nextRunId,
+    required: source.required !== false,
     startedAt: now,
     endedAt: undefined,
     endedReason: undefined,
@@ -710,6 +837,7 @@ export function registerSubagentRun(params: {
   projectStem?: string;
   epochId?: number;
   resultPath?: string;
+  required?: boolean;
   task: string;
   cleanup: "delete" | "keep";
   label?: string;
@@ -738,6 +866,7 @@ export function registerSubagentRun(params: {
     projectStem: params.projectStem,
     epochId: params.epochId,
     resultPath: params.resultPath,
+    required: params.required !== false,
     task: params.task,
     cleanup: params.cleanup,
     expectsCompletionMessage: params.expectsCompletionMessage,
@@ -800,23 +929,6 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
     if (wait?.status !== "ok" && wait?.status !== "error" && wait?.status !== "timeout") {
       return;
     }
-    const entry = subagentRuns.get(runId);
-    if (!entry) {
-      return;
-    }
-    let mutated = false;
-    if (typeof wait.startedAt === "number") {
-      entry.startedAt = wait.startedAt;
-      mutated = true;
-    }
-    if (typeof wait.endedAt === "number") {
-      entry.endedAt = wait.endedAt;
-      mutated = true;
-    }
-    if (!entry.endedAt) {
-      entry.endedAt = Date.now();
-      mutated = true;
-    }
     const waitError = typeof wait.error === "string" ? wait.error : undefined;
     const outcome: SubagentRunOutcome =
       wait.status === "error"
@@ -824,22 +936,11 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
         : wait.status === "timeout"
           ? { status: "timeout" }
           : { status: "ok" };
-    if (!runOutcomesEqual(entry.outcome, outcome)) {
-      entry.outcome = outcome;
-      mutated = true;
-    }
-    if (mutated) {
-      persistSubagentRuns();
-    }
-    await completeSubagentRun({
+    await completeSubagentRunFromTerminalSignal({
       runId,
-      endedAt: entry.endedAt,
+      startedAt: typeof wait.startedAt === "number" ? wait.startedAt : undefined,
+      endedAt: typeof wait.endedAt === "number" ? wait.endedAt : undefined,
       outcome,
-      reason:
-        wait.status === "error" ? SUBAGENT_ENDED_REASON_ERROR : SUBAGENT_ENDED_REASON_COMPLETE,
-      sendFarewell: true,
-      accountId: entry.requesterOrigin?.accountId,
-      triggerCleanup: true,
     });
   } catch {
     // ignore
@@ -850,6 +951,7 @@ export function resetSubagentRegistryForTests(opts?: { persist?: boolean }) {
   subagentRuns.clear();
   resumedRuns.clear();
   endedHookInFlightRunIds.clear();
+  completionInFlightRunIds.clear();
   resetAnnounceQueuesForTests();
   stopSweeper();
   restoreAttempted = false;

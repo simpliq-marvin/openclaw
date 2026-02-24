@@ -13,6 +13,8 @@ export type SubagentRunRecord = {
   projectStem?: string;
   epochId?: number;
   resultPath?: string;
+  /** Whether this child blocks parent completion (default true). */
+  required?: boolean;
   task: string;
   cleanup: "delete" | "keep";
   label?: string;

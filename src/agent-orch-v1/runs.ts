@@ -19,7 +19,6 @@ export function resolveAgentOrchRunResultPath(params: {
     resolved.stateDir,
     "projects",
     params.projectStem,
-    "artifacts",
     "runs",
     params.runId,
     "result.json",
