@@ -33,7 +33,12 @@ describe("agent-orch-v1 outbound gate", () => {
           topic: "project-foo",
         },
       });
-      expect(decision).toEqual({ allow: false, reason: "closed" });
+      expect(decision).toEqual({
+        allow: false,
+        reason: "closed",
+        dropReason: "closed",
+        code: "closed_dropped",
+      });
     });
   });
 
@@ -61,7 +66,12 @@ describe("agent-orch-v1 outbound gate", () => {
           topic: "project-foo",
         },
       });
-      expect(decision).toEqual({ allow: false, reason: "run-fenced" });
+      expect(decision).toEqual({
+        allow: false,
+        reason: "run-fenced",
+        dropReason: "run_fenced",
+        code: "run_fenced_dropped",
+      });
     });
   });
 
@@ -89,6 +99,7 @@ describe("agent-orch-v1 outbound gate", () => {
       expect(decision).toEqual({
         allow: false,
         reason: "stale-epoch",
+        dropReason: "stale_epoch",
         code: "stale_epoch_dropped",
       });
     });

@@ -13,10 +13,13 @@ import type { AgentOrchOutboundContext } from "./types.js";
 
 const log = createSubsystemLogger("agent-orch-v1/gate");
 
+export type AgentOrchOutboundDropReason = "stale_epoch" | "run_fenced" | "halted" | "closed";
+
 export type AgentOrchOutboundGateDecision = {
   allow: boolean;
   reason?: string;
-  code?: "stale_epoch_dropped";
+  dropReason?: AgentOrchOutboundDropReason;
+  code?: "stale_epoch_dropped" | "run_fenced_dropped" | "halted_dropped" | "closed_dropped";
 };
 
 export function evaluateAgentOrchOutboundGate(params: {
@@ -32,7 +35,7 @@ export function evaluateAgentOrchOutboundGate(params: {
     return { allow: true };
   }
   const streamName = params.context.streamName?.trim();
-  if (streamName && streamName === resolved.controlStream) {
+  if (streamName && streamName === resolved.control.zulipStream) {
     return { allow: true };
   }
   const state = loadAgentOrchProjectState(params.cfg, params.project.projectStem);
@@ -45,7 +48,7 @@ export function evaluateAgentOrchOutboundGate(params: {
       at: new Date().toISOString(),
       type: "outbound.dropped",
       data: {
-        reason: "stale-epoch",
+        reason: "stale_epoch",
         runId: params.context.runId,
         runEpochId: params.context.runEpochId,
         currentEpochId: state.epochId,
@@ -56,7 +59,12 @@ export function evaluateAgentOrchOutboundGate(params: {
     log.info(
       `epoch: dropped stale outbound project=${params.project.projectStem} runId=${params.context.runId ?? "unknown"} runEpoch=${params.context.runEpochId} currentEpoch=${state.epochId}`,
     );
-    return { allow: false, reason: "stale-epoch", code: "stale_epoch_dropped" };
+    return {
+      allow: false,
+      reason: "stale-epoch",
+      dropReason: "stale_epoch",
+      code: "stale_epoch_dropped",
+    };
   }
   if (
     params.context.runId &&
@@ -70,26 +78,37 @@ export function evaluateAgentOrchOutboundGate(params: {
       at: new Date().toISOString(),
       type: "outbound.dropped",
       data: {
-        reason: "run-fenced",
+        reason: "run_fenced",
         runId: params.context.runId,
         streamName: params.context.streamName,
         topic: params.context.topic,
       },
     });
-    return { allow: false, reason: "run-fenced" };
+    return {
+      allow: false,
+      reason: "run-fenced",
+      dropReason: "run_fenced",
+      code: "run_fenced_dropped",
+    };
   }
   if (isAgentOrchProjectSuppressed(state)) {
+    const suppressedReason: AgentOrchOutboundDropReason = state.halted ? "halted" : "closed";
     appendAgentOrchProjectEvent(params.cfg, params.project.projectStem, {
       at: new Date().toISOString(),
       type: "outbound.dropped",
       data: {
-        reason: state.halted ? "halted" : "closed",
+        reason: suppressedReason,
         runId: params.context.runId,
         streamName: params.context.streamName,
         topic: params.context.topic,
       },
     });
-    return { allow: false, reason: state.halted ? "halted" : "closed" };
+    return {
+      allow: false,
+      reason: suppressedReason,
+      dropReason: suppressedReason,
+      code: suppressedReason === "halted" ? "halted_dropped" : "closed_dropped",
+    };
   }
   markAgentOrchLaneActivity({
     cfg: params.cfg,

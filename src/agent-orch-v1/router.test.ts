@@ -76,6 +76,7 @@ describe("agent-orch-v1 routing router", () => {
         ok: false,
         error: {
           code: "routing_origin_missing",
+          dropReason: "routing_failure",
           message: "routing: origin context missing for routing fallback",
           reason: "missing-role",
           project: "project-foo",

@@ -369,6 +369,7 @@ describe("runMessageAction threading auto-injection", () => {
         ok: false,
         error: {
           code: "routing_origin_missing",
+          dropReason: "routing_failure",
           message: "routing: origin context missing for routing fallback",
           reason: "missing-role",
           project: "ft-project-001",

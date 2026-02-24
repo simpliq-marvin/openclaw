@@ -25,6 +25,7 @@ export type RoutingStructuredErrorPayload = {
   ok: false;
   error: {
     code: "routing_origin_missing";
+    dropReason: "routing_failure";
     message: string;
     reason: string;
     project: string;
@@ -134,6 +135,7 @@ export function resolveRouteSendPlan(params: {
           ok: false,
           error: {
             code: "routing_origin_missing",
+            dropReason: "routing_failure",
             message: "routing: origin context missing for routing fallback",
             reason: adapterResolved.reason,
             project: diagnostics.project,
@@ -170,6 +172,7 @@ export function resolveRouteSendPlan(params: {
         ok: false,
         error: {
           code: "routing_origin_missing",
+          dropReason: "routing_failure",
           message: "routing: origin context missing for routing fallback",
           reason: parsed.reason,
           project: diagnostics.project,

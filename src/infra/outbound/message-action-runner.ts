@@ -5,7 +5,10 @@ import {
   type RoutingOriginContext,
   type RoutingStructuredErrorPayload,
 } from "../../agent-orch-v1/router.js";
-import { resolveAgentOrchActiveEpochKickoffMid } from "../../agent-orch-v1/store.js";
+import {
+  appendAgentOrchProjectEvent,
+  resolveAgentOrchActiveEpochKickoffMid,
+} from "../../agent-orch-v1/store.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import {
   readNumberParam,
@@ -325,6 +328,20 @@ function maybeApplyRouteEnvelope(params: {
       throw new Error(
         `routing: read route resolution failed code=${plan.payload.error.code} reason=${plan.payload.error.reason}`,
       );
+    }
+    const projectStem = plan.payload.error.project.trim();
+    if (projectStem && projectStem !== "unknown") {
+      appendAgentOrchProjectEvent(params.input.cfg, projectStem, {
+        at: new Date().toISOString(),
+        type: "outbound.dropped",
+        data: {
+          reason: "routing_failure",
+          code: plan.payload.error.code,
+          routeReason: plan.payload.error.reason,
+          role: plan.payload.error.role,
+          instance: plan.payload.error.instance,
+        },
+      });
     }
     log.warn(
       `routing: origin missing for fallback reason=${plan.payload.error.reason} project=${plan.payload.error.project} role=${plan.payload.error.role} instance=${plan.payload.error.instance}`,

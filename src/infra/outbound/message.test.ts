@@ -60,7 +60,7 @@ describe("sendMessage", () => {
         meta: {
           dropped: true,
           code: "stale_epoch_dropped",
-          reason: "stale-epoch",
+          reason: "stale_epoch",
         },
       },
     ]);
@@ -74,7 +74,7 @@ describe("sendMessage", () => {
 
     expect(result.dropped).toEqual({
       code: "stale_epoch_dropped",
-      reason: "stale-epoch",
+      reason: "stale_epoch",
     });
   });
 });
