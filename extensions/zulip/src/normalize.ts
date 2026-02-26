@@ -4,8 +4,8 @@ export function normalizeZulipMessagingTarget(raw: string): string | undefined {
     return undefined;
   }
   const lower = trimmed.toLowerCase();
-  if (lower.startsWith("stream:")) {
-    const rest = trimmed.slice("stream:".length).trim();
+  if (lower.startsWith("stream:") || lower.startsWith("channel:")) {
+    const rest = trimmed.slice(trimmed.indexOf(":") + 1).trim();
     return rest ? `stream:${rest}` : undefined;
   }
   if (lower.startsWith("user:") || lower.startsWith("dm:")) {
@@ -14,7 +14,19 @@ export function normalizeZulipMessagingTarget(raw: string): string | undefined {
   }
   if (lower.startsWith("zulip:")) {
     const rest = trimmed.slice("zulip:".length).trim();
-    return rest ? `user:${rest}` : undefined;
+    if (!rest) {
+      return undefined;
+    }
+    // Preserve explicit semantics for provider-prefixed targets.
+    if (
+      /^(?:stream|channel|user|dm):/i.test(rest) ||
+      rest.startsWith("@") ||
+      rest.startsWith("#")
+    ) {
+      return normalizeZulipMessagingTarget(rest);
+    }
+    // Backward compatibility for legacy `zulip:<user>` DM usage.
+    return `user:${rest}`;
   }
   if (trimmed.startsWith("@")) {
     const id = trimmed.slice(1).trim();
