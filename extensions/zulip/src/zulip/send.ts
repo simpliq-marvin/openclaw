@@ -70,48 +70,85 @@ function parseZulipTarget(raw: string): ZulipTarget {
   if (!trimmed) {
     throw new Error("Recipient is required for Zulip sends");
   }
-  const lower = trimmed.toLowerCase();
-  if (lower.startsWith("stream:")) {
-    const rest = trimmed.slice("stream:".length).trim();
-    if (!rest) {
-      throw new Error("Stream name is required for Zulip sends");
-    }
-    const [stream, topic] = rest.split(/[:#/]/);
-    return { kind: "stream", stream: stream.trim(), topic: topic?.trim() };
+  let value = trimmed;
+  let hadProviderPrefix = false;
+  if (/^zulip:/i.test(value)) {
+    value = value.slice("zulip:".length).trim();
+    hadProviderPrefix = true;
   }
+  if (!value) {
+    throw new Error("Recipient is required for Zulip sends");
+  }
+  const lower = value.toLowerCase();
   if (lower.startsWith("user:") || lower.startsWith("dm:")) {
-    const email = trimmed.slice(trimmed.indexOf(":") + 1).trim();
+    const email = value.slice(value.indexOf(":") + 1).trim();
     if (!email) {
       throw new Error("Email is required for Zulip direct messages");
     }
     return { kind: "user", email };
   }
-  if (lower.startsWith("zulip:")) {
-    const email = trimmed.slice("zulip:".length).trim();
+  if (value.startsWith("@")) {
+    const email = value.slice(1).trim();
     if (!email) {
       throw new Error("Email is required for Zulip direct messages");
     }
     return { kind: "user", email };
   }
-  if (trimmed.startsWith("@")) {
-    const email = trimmed.slice(1).trim();
-    if (!email) {
-      throw new Error("Email is required for Zulip direct messages");
-    }
-    return { kind: "user", email };
-  }
-  if (trimmed.startsWith("#")) {
-    const rest = trimmed.slice(1).trim();
-    const [stream, topic] = rest.split(/[:#/]/);
-    if (!stream) {
+  if (lower.startsWith("stream:") || lower.startsWith("channel:")) {
+    const parsed = splitStreamAndTopic(value.slice(value.indexOf(":") + 1));
+    if (!parsed || !parsed.stream) {
       throw new Error("Stream name is required for Zulip sends");
     }
-    return { kind: "stream", stream: stream.trim(), topic: topic?.trim() };
+    return { kind: "stream", stream: parsed.stream, topic: parsed.topic };
   }
-  if (trimmed.includes("@")) {
-    return { kind: "user", email: trimmed };
+  if (value.startsWith("#")) {
+    const parsed = splitStreamAndTopic(value.slice(1));
+    if (!parsed || !parsed.stream) {
+      throw new Error("Stream name is required for Zulip sends");
+    }
+    return { kind: "stream", stream: parsed.stream, topic: parsed.topic };
   }
-  return { kind: "stream", stream: trimmed };
+  if (hadProviderPrefix && !value.includes("@")) {
+    return { kind: "user", email: value };
+  }
+  if (value.includes("@")) {
+    return { kind: "user", email: value };
+  }
+  const parsedBare = splitStreamAndTopic(value);
+  if (!parsedBare || !parsedBare.stream) {
+    throw new Error("Stream name is required for Zulip sends");
+  }
+  return { kind: "stream", stream: parsedBare.stream, topic: parsedBare.topic };
+}
+
+function splitStreamAndTopic(raw: string): { stream: string; topic?: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  let stream = trimmed;
+  let topic: string | undefined;
+  const topicSuffix = /(?:^|\s)topic:\s*(.+)$/i.exec(trimmed);
+  if (topicSuffix) {
+    stream = trimmed.slice(0, topicSuffix.index).trim();
+    topic = topicSuffix[1]?.trim() || undefined;
+  } else {
+    const colonIndex = trimmed.indexOf(":");
+    if (colonIndex > -1) {
+      stream = trimmed.slice(0, colonIndex).trim();
+      topic = trimmed.slice(colonIndex + 1).trim() || undefined;
+    } else {
+      const sepIndex = trimmed.search(/[\/#]/);
+      if (sepIndex > -1) {
+        stream = trimmed.slice(0, sepIndex).trim();
+        topic = trimmed.slice(sepIndex + 1).trim() || undefined;
+      }
+    }
+  }
+  if (!stream) {
+    return null;
+  }
+  return { stream, topic };
 }
 
 export async function sendMessageZulip(

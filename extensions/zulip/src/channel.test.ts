@@ -16,13 +16,25 @@ describe("zulipPlugin", () => {
       expect(normalize("@alice")).toBe("user:alice");
     });
 
-    it("normalizes zulip: prefix to user:", () => {
+    it("normalizes legacy zulip:<user> prefix to user:", () => {
       const normalize = zulipPlugin.messaging?.normalizeTarget;
       if (!normalize) {
         return;
       }
 
       expect(normalize("zulip:USER123")).toBe("user:USER123");
+    });
+
+    it("preserves semantics for provider-prefixed stream targets", () => {
+      const normalize = zulipPlugin.messaging?.normalizeTarget;
+      if (!normalize) {
+        return;
+      }
+
+      expect(normalize("zulip:stream:00-control:autonomous-bits-3")).toBe(
+        "stream:00-control:autonomous-bits-3",
+      );
+      expect(normalize("zulip:channel:00-control/topic-1")).toBe("stream:00-control/topic-1");
     });
   });
 
