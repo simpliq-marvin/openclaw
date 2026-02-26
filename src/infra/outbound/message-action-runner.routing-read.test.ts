@@ -108,8 +108,25 @@ describe("runMessageAction route-aware read", () => {
     expect(result.kind).toBe("action");
     expect(capturedActionCtx?.channel).toBe("zulip");
     expect(capturedActionCtx?.action).toBe("read");
-    expect(capturedActionCtx?.params?.to).toBe("zulip:stream:03-flat-team-engineer");
-    expect(capturedActionCtx?.params?.threadId).toBe("ft-project-001");
+    expect(capturedActionCtx?.params?.to).toBe("stream:03-flat-team-engineer:ft-project-001");
+    expect(capturedActionCtx?.params?.threadId).toBeUndefined();
+  });
+
+  it("canonicalizes read target when topic is provided separately", async () => {
+    const cfg = buildConfig();
+    await runMessageAction({
+      cfg,
+      action: "read",
+      params: {
+        channel: "zulip",
+        target: "stream:03-flat-team-engineer",
+        topic: "ft-project-001",
+        limit: 10,
+      } as never,
+    });
+    expect(capturedActionCtx?.params?.to).toBe("stream:03-flat-team-engineer:ft-project-001");
+    expect(capturedActionCtx?.params?.topic).toBeUndefined();
+    expect(capturedActionCtx?.params?.threadId).toBeUndefined();
   });
 
   it("applies kickoffMid epoch fence to route-aware reads by default", async () => {
