@@ -133,39 +133,130 @@ function toNonEmptyString(value: unknown): string | undefined {
   return trimmed || undefined;
 }
 
+type ParsedZulipTarget =
+  | { kind: "stream"; stream: string; topic?: string }
+  | { kind: "user"; email: string };
+
+function splitZulipStreamAndTopic(raw: string): { stream: string; topic?: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  let stream = trimmed;
+  let topic: string | undefined;
+  const topicSuffix = /(?:^|\s)topic:\s*(.+)$/i.exec(trimmed);
+  if (topicSuffix) {
+    stream = trimmed.slice(0, topicSuffix.index).trim();
+    topic = topicSuffix[1]?.trim() || undefined;
+  } else {
+    const colonIndex = trimmed.indexOf(":");
+    if (colonIndex > -1) {
+      // Canonical form: stream:<stream>:<topic>, where topic may contain ":".
+      stream = trimmed.slice(0, colonIndex).trim();
+      topic = trimmed.slice(colonIndex + 1).trim() || undefined;
+    } else {
+      const sepIndex = trimmed.search(/[/#]/);
+      if (sepIndex > -1) {
+        stream = trimmed.slice(0, sepIndex).trim();
+        topic = trimmed.slice(sepIndex + 1).trim() || undefined;
+      }
+    }
+  }
+  if (!stream) {
+    return null;
+  }
+  return { stream, topic };
+}
+
+function parseZulipTarget(raw: string): ParsedZulipTarget | null {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  let value = trimmed;
+  let hadProviderPrefix = false;
+  if (/^zulip:/i.test(value)) {
+    value = value.slice("zulip:".length).trim();
+    hadProviderPrefix = true;
+  }
+  if (!value) {
+    return null;
+  }
+  if (/^(?:user|dm):/i.test(value)) {
+    const email = value.slice(value.indexOf(":") + 1).trim();
+    return email ? { kind: "user", email } : null;
+  }
+  if (value.startsWith("@")) {
+    const email = value.slice(1).trim();
+    return email ? { kind: "user", email } : null;
+  }
+  if (value.startsWith("#")) {
+    const parsed = splitZulipStreamAndTopic(value.slice(1));
+    if (!parsed) {
+      return null;
+    }
+    return { kind: "stream", stream: parsed.stream, topic: parsed.topic };
+  }
+  if (/^(?:stream|channel):/i.test(value)) {
+    const parsed = splitZulipStreamAndTopic(value.slice(value.indexOf(":") + 1));
+    if (!parsed) {
+      return null;
+    }
+    return { kind: "stream", stream: parsed.stream, topic: parsed.topic };
+  }
+  if (hadProviderPrefix && !value.includes("@")) {
+    // Preserve legacy "zulip:<id>" behavior as a DM target.
+    return { kind: "user", email: value };
+  }
+  if (value.includes("@")) {
+    return { kind: "user", email: value };
+  }
+  return { kind: "stream", stream: value };
+}
+
+function canonicalizeZulipTarget(params: {
+  target: string;
+  topicHint?: string;
+  requireTopic: boolean;
+}): string | undefined {
+  const parsed = parseZulipTarget(params.target);
+  if (!parsed) {
+    return undefined;
+  }
+  if (parsed.kind === "user") {
+    return `user:${parsed.email}`;
+  }
+  const topic = parsed.topic ?? params.topicHint;
+  if (params.requireTopic && !topic) {
+    throw new Error("Topic is required for Zulip stream sends.");
+  }
+  return topic ? `stream:${parsed.stream}:${topic}` : `stream:${parsed.stream}`;
+}
+
+function stripZulipTopicFields(args: Record<string, unknown>): void {
+  delete args.threadId;
+  delete args.topic;
+  delete args.threadName;
+}
+
 function parseZulipStream(raw: unknown): string | undefined {
   const value = toNonEmptyString(raw);
   if (!value) {
     return undefined;
   }
-  const withProvider = value.match(/^zulip:(?:stream|channel):([^:]+)(?::topic:.+)?$/i);
-  if (withProvider?.[1]) {
-    return withProvider[1].trim() || undefined;
+  const parsed = parseZulipTarget(value);
+  if (!parsed || parsed.kind !== "stream") {
+    return undefined;
   }
-  const short = value.match(/^(?:stream|channel):([^:]+)(?::topic:.+)?$/i);
-  if (short?.[1]) {
-    return short[1].trim() || undefined;
-  }
-  return value;
+  return parsed.stream;
 }
 
 function hasZulipTopicInTarget(target: string): boolean {
-  const value = target.trim();
-  if (!value) {
+  const parsed = parseZulipTarget(target);
+  if (!parsed || parsed.kind !== "stream") {
     return false;
   }
-  // Canonical form.
-  if (/:topic:/i.test(value)) {
-    return true;
-  }
-  // Human-friendly form: #stream:topic
-  if (value.startsWith("#")) {
-    const idx = value.indexOf(":");
-    if (idx > 0 && idx < value.length - 1) {
-      return value.slice(idx + 1).trim().length > 0;
-    }
-  }
-  return false;
+  return Boolean(parsed.topic);
 }
 
 function isLikelyZulipStreamTarget(target: unknown): target is string {
@@ -173,18 +264,8 @@ function isLikelyZulipStreamTarget(target: unknown): target is string {
   if (!value) {
     return false;
   }
-  if (/^zulip:(?:stream|channel):/i.test(value) || /^(?:stream|channel):/i.test(value)) {
-    return true;
-  }
-  // Zulip users are usually addressed via email; avoid treating DMs as streams.
-  if (/^zulip:user:/i.test(value) || /^user:/i.test(value)) {
-    return false;
-  }
-  if (value.includes("@")) {
-    return false;
-  }
-  // Treat bare stream names as streams (common in agent-to-agent routing).
-  return true;
+  const parsed = parseZulipTarget(value);
+  return parsed?.kind === "stream";
 }
 
 function resolveInboundZulipOriginContext(
@@ -437,6 +518,39 @@ function maybeApplyZulipTopicGuardrail(params: {
   log.info(
     `routing: guardrail autofilled topic source=${origin.source} stream=${origin.stream} topic=${origin.topic}`,
   );
+}
+
+function maybeCanonicalizeZulipTarget(params: {
+  action: ChannelMessageActionName;
+  channel: ChannelId;
+  args: Record<string, unknown>;
+}): void {
+  if (params.channel !== "zulip") {
+    return;
+  }
+  if (params.action !== "send" && params.action !== "read" && params.action !== "search") {
+    return;
+  }
+  const target = toNonEmptyString(params.args.to);
+  if (!target) {
+    return;
+  }
+  const topicHint =
+    toNonEmptyString(params.args.threadId) ??
+    toNonEmptyString(params.args.topic) ??
+    toNonEmptyString(params.args.threadName);
+  const canonical = canonicalizeZulipTarget({
+    target,
+    topicHint,
+    requireTopic: params.action === "send",
+  });
+  if (!canonical) {
+    return;
+  }
+  params.args.to = canonical;
+  if (params.action !== "send") {
+    stripZulipTopicFields(params.args);
+  }
 }
 
 export type RunMessageActionParams = {
@@ -873,6 +987,13 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
   }
   const mirrorMediaUrls =
     mergedMediaUrls.length > 0 ? mergedMediaUrls : mediaUrl ? [mediaUrl] : undefined;
+  const threadIdForSend =
+    channel === "zulip"
+      ? (() => {
+          stripZulipTopicFields(params);
+          return undefined;
+        })()
+      : (resolvedThreadId ?? undefined);
   throwIfAborted(abortSignal);
   const send = await executeSendAction({
     ctx: {
@@ -904,7 +1025,7 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
     gifPlayback,
     bestEffort: bestEffort ?? undefined,
     replyToId: replyToId ?? undefined,
-    threadId: resolvedThreadId ?? undefined,
+    threadId: threadIdForSend,
   });
 
   return {
@@ -1164,6 +1285,11 @@ export async function runMessageAction(
     action,
     args: params,
     accountId,
+  });
+  maybeCanonicalizeZulipTarget({
+    action,
+    channel,
+    args: params,
   });
 
   enforceCrossContextPolicy({

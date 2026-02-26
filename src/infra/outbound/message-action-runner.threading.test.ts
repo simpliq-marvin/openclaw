@@ -313,8 +313,9 @@ describe("runMessageAction threading auto-injection", () => {
       },
     });
 
-    expect(call?.to).toBe("zulip:stream:eng-stream-2");
-    expect(call?.threadId).toBe("ft-project-001");
+    expect(call?.to).toBe("stream:eng-stream-2:ft-project-001");
+    expect(call?.threadId).toBeUndefined();
+    expect(call?.ctx?.params?.threadId).toBeUndefined();
     expect(call?.ctx?.params?.channel).toBe("zulip");
   });
 
@@ -337,8 +338,9 @@ describe("runMessageAction threading auto-injection", () => {
       },
     });
 
-    expect(call?.to).toBe("zulip:stream:origin-stream");
-    expect(call?.threadId).toBe("origin-topic");
+    expect(call?.to).toBe("stream:origin-stream:origin-topic");
+    expect(call?.threadId).toBeUndefined();
+    expect(call?.ctx?.params?.threadId).toBeUndefined();
     expect(call?.message).toContain(
       "[routing-failure] reason=unmapped-role-instance project=ft-project-001 role=qa instance=1",
     );
@@ -381,7 +383,7 @@ describe("runMessageAction threading auto-injection", () => {
     });
   });
 
-  it("aliases Zulip topic param to threadId", async () => {
+  it("canonicalizes separate Zulip topic into stream target", async () => {
     mockHandledSendAction();
 
     const { call } = await runThreadingAction({
@@ -394,7 +396,9 @@ describe("runMessageAction threading auto-injection", () => {
       },
     });
 
-    expect(call?.threadId).toBe("ft-project-001");
+    expect(call?.to).toBe("stream:02-flat-team-strategist:ft-project-001");
+    expect(call?.threadId).toBeUndefined();
+    expect(call?.ctx?.params?.threadId).toBeUndefined();
   });
 
   it("autofills missing Zulip topic from inbound origin context", async () => {
@@ -414,8 +418,9 @@ describe("runMessageAction threading auto-injection", () => {
       },
     });
 
-    expect(call?.to).toBe("zulip:stream:eng-stream");
-    expect(call?.threadId).toBe("origin-topic");
+    expect(call?.to).toBe("stream:eng-stream:origin-topic");
+    expect(call?.threadId).toBeUndefined();
+    expect(call?.ctx?.params?.threadId).toBeUndefined();
   });
 
   it("autofills missing Zulip topic from session metadata when inbound context is absent", async () => {
@@ -442,7 +447,9 @@ describe("runMessageAction threading auto-injection", () => {
       },
     });
 
-    expect(call?.threadId).toBe("session-topic");
+    expect(call?.to).toBe("stream:eng-stream:session-topic");
+    expect(call?.threadId).toBeUndefined();
+    expect(call?.ctx?.params?.threadId).toBeUndefined();
   });
 
   it("prefers inbound origin over session metadata for Zulip topic autofill", async () => {
@@ -474,7 +481,9 @@ describe("runMessageAction threading auto-injection", () => {
       },
     });
 
-    expect(call?.threadId).toBe("inbound-topic");
+    expect(call?.to).toBe("stream:eng-stream:inbound-topic");
+    expect(call?.threadId).toBeUndefined();
+    expect(call?.ctx?.params?.threadId).toBeUndefined();
   });
 
   it("autofills missing Zulip topic for bare stream name targets", async () => {
@@ -494,6 +503,8 @@ describe("runMessageAction threading auto-injection", () => {
       },
     });
 
-    expect(call?.threadId).toBe("origin-topic");
+    expect(call?.to).toBe("stream:02-flat-team-strategist:origin-topic");
+    expect(call?.threadId).toBeUndefined();
+    expect(call?.ctx?.params?.threadId).toBeUndefined();
   });
 });

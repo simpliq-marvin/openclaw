@@ -11,6 +11,16 @@ function safeString(value: unknown): string | undefined {
   return trimmed || undefined;
 }
 
+function normalizeZulipStreamName(value: unknown): string | undefined {
+  const raw = safeString(value);
+  if (!raw) {
+    return undefined;
+  }
+  // OpenClaw's Zulip templating sometimes prefixes stream names with '#'
+  // (e.g. '#00-control'). Topology + control lane config use bare names.
+  return raw.startsWith("#") ? raw.slice(1) : raw;
+}
+
 function normalizeChannelLabel(...values: Array<unknown>): string | undefined {
   for (const value of values) {
     const candidate = safeString(value);
@@ -31,12 +41,38 @@ function parseZulipAddress(raw?: string): {
   if (!value) {
     return {};
   }
-  const match = value.match(/^zulip:(?:stream|channel):([^:]+)(?::topic:(.+))?$/i);
-  if (!match) {
+  let candidate = value;
+  if (/^zulip:/i.test(candidate)) {
+    candidate = candidate.slice("zulip:".length).trim();
+  }
+  if (!candidate) {
     return {};
   }
-  const streamToken = match[1]?.trim();
-  const topic = match[2]?.trim();
+  if (/^(?:stream|channel):/i.test(candidate)) {
+    candidate = candidate.slice(candidate.indexOf(":") + 1).trim();
+  } else {
+    return {};
+  }
+  let streamToken = candidate;
+  let topic: string | undefined;
+  const topicSuffix = /(?:^|\s)topic:\s*(.+)$/i.exec(candidate);
+  if (topicSuffix) {
+    streamToken = candidate.slice(0, topicSuffix.index).trim();
+    topic = topicSuffix[1]?.trim() || undefined;
+  } else {
+    const colonIndex = candidate.indexOf(":");
+    if (colonIndex > -1) {
+      // Canonical format: stream:<stream>:<topic> (topic may contain ":").
+      streamToken = candidate.slice(0, colonIndex).trim();
+      topic = candidate.slice(colonIndex + 1).trim() || undefined;
+    } else {
+      const slashOrHash = candidate.search(/[/#]/);
+      if (slashOrHash > -1) {
+        streamToken = candidate.slice(0, slashOrHash).trim();
+        topic = candidate.slice(slashOrHash + 1).trim() || undefined;
+      }
+    }
+  }
   if (!streamToken) {
     return {};
   }
@@ -44,7 +80,7 @@ function parseZulipAddress(raw?: string): {
   return {
     streamName: isNumericStream ? undefined : streamToken,
     streamId: isNumericStream ? streamToken : undefined,
-    topic: topic || undefined,
+    topic,
   };
 }
 
@@ -107,10 +143,10 @@ export function resolveAgentOrchInboundContext(ctx: MsgContext): AgentOrchInboun
   const fromParsed = parseZulipAddress(safeString(ctx.From));
   const toParsed = parseZulipAddress(safeString(ctx.OriginatingTo) ?? safeString(ctx.To));
   const streamName =
-    safeString(ctx.GroupChannel) ??
-    safeString(ctx.GroupSubject) ??
-    toParsed.streamName ??
-    fromParsed.streamName;
+    normalizeZulipStreamName(ctx.GroupChannel) ??
+    normalizeZulipStreamName(ctx.GroupSubject) ??
+    normalizeZulipStreamName(toParsed.streamName) ??
+    normalizeZulipStreamName(fromParsed.streamName);
   const streamId = toParsed.streamId ?? fromParsed.streamId;
   const topic =
     safeString(ctx.MessageThreadId != null ? String(ctx.MessageThreadId) : undefined) ??
@@ -184,10 +220,10 @@ export function resolveAgentOrchOutboundContext(params: {
   const threadTopic =
     params.threadId != null && params.threadId !== "" ? String(params.threadId).trim() : undefined;
   const streamName =
-    safeString(zulipData?.streamName) ??
-    safeString(zulipData?.stream) ??
-    safeString(zulipData?.channel) ??
-    parsedTo.streamName;
+    normalizeZulipStreamName(zulipData?.streamName) ??
+    normalizeZulipStreamName(zulipData?.stream) ??
+    normalizeZulipStreamName(zulipData?.channel) ??
+    normalizeZulipStreamName(parsedTo.streamName);
   const streamId =
     safeString(zulipData?.streamId) ?? safeString(zulipData?.stream_id) ?? parsedTo.streamId;
   const topic =
